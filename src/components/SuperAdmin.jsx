@@ -799,7 +799,7 @@ const NAV = [
   { id: "register",  label: "تسجيل شركة",    icon: "➕" },
 ];
 
-export default function SuperAdmin() {
+export default function SuperAdmin({ onLogout }) {
   const [screen, setScreen]   = useState("overview");
   const [tenants, setTenants] = useState([]);
   const [collapsed, setCollapsed] = useState(false);
@@ -945,9 +945,13 @@ export default function SuperAdmin() {
               <div style={{ width: 24, height: 24, borderRadius: "50%", background: `linear-gradient(135deg, ${C.brand}, ${C.purple})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12 }}>👤</div>
               <div>
                 <div style={{ fontSize: 10, fontWeight: 700, color: C.text }}>Super Admin</div>
-                <div style={{ fontSize: 8, color: C.muted }}>admin@techoffice.com</div>
+                <div style={{ fontSize: 8, color: C.muted }}>{user?.email || "admin@techoffice.com"}</div>
               </div>
             </div>
+            <button onClick={() => onLogout && onLogout()}
+              style={{ padding: "6px 14px", background: C.dangerDim, border: `1px solid ${C.danger}44`, borderRadius: 8, color: C.danger, fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+              🚪 خروج
+            </button>
           </div>
         </div>
 

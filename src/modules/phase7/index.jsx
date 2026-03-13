@@ -263,6 +263,108 @@ const MOCK_EXT = {
   ],
 };
 
+
+// ══════════════════════════════════════════════════════════════
+// DASHBOARD — الصفحة الرئيسية
+// ══════════════════════════════════════════════════════════════
+function Dashboard() {
+  const projects  = MOCK_EXT.projects;
+  const totalCV   = projects.reduce((s, p) => s + p.contractValue, 0);
+  const totalPaid = projects.reduce((s, p) => s + p.paid, 0);
+  const openNCRs  = MOCK_EXT.ncrs.filter(n => n.status === "OPEN").length;
+  const radarData = [
+    { subject: "الجودة",       A: 94 },
+    { subject: "السلامة",      A: 88 },
+    { subject: "التقدم",       A: 74 },
+    { subject: "التدفق النقدي",A: 85 },
+    { subject: "التسليم",      A: 70 },
+    { subject: "الوثائق",      A: 82 },
+  ];
+
+  return (
+    <div style={{ flex: 1, overflowY: "auto", padding: 20, display: "flex", flexDirection: "column", gap: 14 }}>
+      {/* Stats Row */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
+        <Stat label="إجمالي قيم العقود"    value={fmt(totalCV / 1e6, 1) + " م ج.م"} icon="💼" color={C.brand} />
+        <Stat label="المحصّل الفعلي"        value={fmt(totalPaid / 1e6, 1) + " م ج.م"} sub={pct(totalPaid,totalCV)+"% من العقود"} icon="💳" color={C.success} />
+        <Stat label="عدد المشاريع النشطة"   value={projects.length} icon="🏗️" color={C.info} />
+        <Stat label="NCRs مفتوحة"            value={openNCRs} icon="⚠️" color={openNCRs > 0 ? C.danger : C.success} />
+      </div>
+
+      {/* Charts Row */}
+      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 14 }}>
+        <Card>
+          <div style={{ fontWeight: 700, fontSize: 11, color: C.text, marginBottom: 12 }}>💵 التدفق النقدي — مخطط / فعلي (مليون ج.م)</div>
+          <ResponsiveContainer width="100%" height={190}>
+            <ComposedChart data={MOCK_EXT.cashFlow}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+              <XAxis dataKey="month" tick={{ fill: C.muted, fontSize: 9 }} />
+              <YAxis tick={{ fill: C.muted, fontSize: 9 }} tickFormatter={v => (v/1e6).toFixed(0)+"م"} />
+              <Tooltip contentStyle={{ background: C.card, border: "1px solid "+C.border, fontSize: 10 }} formatter={v => v ? [fmt(v)+" ج.م"] : ["—"]} />
+              <Legend wrapperStyle={{ fontSize: 10 }} />
+              <Bar  dataKey="planned" fill={C.brand+"66"} name="مخطط" radius={[3,3,0,0]} />
+              <Line type="monotone" dataKey="actual" stroke={C.success} strokeWidth={2} dot={{ fill: C.success, r: 3 }} name="فعلي" />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </Card>
+        <Card>
+          <div style={{ fontWeight: 700, fontSize: 11, color: C.text, marginBottom: 14 }}>🎯 مؤشرات الأداء</div>
+          <ResponsiveContainer width="100%" height={190}>
+            <RadarChart data={radarData}>
+              <PolarGrid stroke={C.border} />
+              <PolarAngleAxis dataKey="subject" tick={{ fill: C.muted, fontSize: 9 }} />
+              <PolarRadiusAxis domain={[0,100]} tick={false} />
+              <Radar name="الأداء" dataKey="A" stroke={C.brand} fill={C.brand} fillOpacity={0.25} />
+            </RadarChart>
+          </ResponsiveContainer>
+        </Card>
+      </div>
+
+      {/* Projects Row */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 14 }}>
+        {projects.map(p => {
+          const behind = p.plannedProgress - p.progress;
+          const collPct = parseFloat(pct(p.paid, p.contractValue));
+          return (
+            <Card key={p.id}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+                <span style={{ color: C.brand, fontWeight: 800, fontSize: 13 }}>{p.code}</span>
+                <Badge text={p.status === "EXECUTION" ? "تنفيذ" : "مكتمل"} color={p.status === "EXECUTION" ? C.warning : C.success} />
+              </div>
+              <div style={{ fontSize: 10, color: C.textSub, marginBottom: 12, lineHeight: 1.6 }}>{p.name}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span style={{ fontSize: 9, color: C.muted }}>التقدم الفعلي</span>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: behind > 5 ? C.danger : behind > 0 ? C.warning : C.success }}>
+                      {p.progress}% {behind > 0 ? "↓"+behind.toFixed(1)+"%" : "✓"}
+                    </span>
+                  </div>
+                  <div style={{ height: 6, background: C.border, borderRadius: 3, overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: p.progress+"%", background: behind > 5 ? C.danger : C.brand, borderRadius: 3, transition: "width 0.5s" }} />
+                  </div>
+                </div>
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span style={{ fontSize: 9, color: C.muted }}>التحصيل</span>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: C.success }}>{collPct}%</span>
+                  </div>
+                  <div style={{ height: 6, background: C.border, borderRadius: 3, overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: collPct+"%", background: C.success, borderRadius: 3, transition: "width 0.5s" }} />
+                  </div>
+                </div>
+              </div>
+              <div style={{ marginTop: 10, fontSize: 9, color: C.muted }}>
+                {fmt(p.contractValue/1e6,1)} م ج.م | {p.length} كم | ينتهي: {fmtDate(p.contractEnd)}
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ══════════════════════════════════════════════════════════════
 // ① BUDGET + EVM SCREEN
 // ══════════════════════════════════════════════════════════════
