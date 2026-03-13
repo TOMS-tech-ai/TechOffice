@@ -1,0 +1,1023 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TECHOFFICE ERP — دليل التشغيل التفاعلي</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;900&display=swap');
+
+  :root {
+    --bg:       #020408;
+    --surface:  #060910;
+    --card:     #0a0e1a;
+    --card2:    #0f1424;
+    --border:   #151c30;
+    --border2:  #1e2840;
+    --brand:    #6366f1;
+    --brandL:   #818cf8;
+    --brandDim: #6366f118;
+    --success:  #22c55e;
+    --danger:   #ef4444;
+    --warning:  #f59e0b;
+    --info:     #38bdf8;
+    --purple:   #a78bfa;
+    --teal:     #2dd4bf;
+    --text:     #e2e8f6;
+    --textSub:  #64748b;
+    --muted:    #2d3748;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Cairo', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    direction: rtl;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Animated Background ── */
+  body::before {
+    content: '';
+    position: fixed; inset: 0; z-index: 0;
+    background:
+      radial-gradient(ellipse 800px 600px at 20% 20%, #6366f108 0%, transparent 60%),
+      radial-gradient(ellipse 600px 400px at 80% 70%, #a78bfa06 0%, transparent 60%),
+      radial-gradient(ellipse 500px 300px at 50% 50%, #38bdf804 0%, transparent 50%);
+    pointer-events: none;
+  }
+
+  /* ── Header ── */
+  .header {
+    position: sticky; top: 0; z-index: 100;
+    background: #020408ee;
+    backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--border);
+    padding: 0 40px;
+    display: flex; align-items: center; justify-content: space-between;
+    height: 64px;
+  }
+
+  .logo {
+    display: flex; align-items: center; gap: 12px;
+  }
+
+  .logo-icon {
+    width: 38px; height: 38px;
+    background: linear-gradient(135deg, var(--brand), var(--purple));
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px;
+    box-shadow: 0 0 20px #6366f130;
+  }
+
+  .logo-text { font-size: 17px; font-weight: 900; color: var(--text); }
+  .logo-sub  { font-size: 10px; color: var(--textSub); font-weight: 500; }
+
+  .progress-bar-wrap {
+    display: flex; align-items: center; gap: 12px;
+    flex: 1; max-width: 400px; margin: 0 40px;
+  }
+
+  .progress-track {
+    flex: 1; height: 4px;
+    background: var(--border);
+    border-radius: 2px; overflow: hidden;
+  }
+
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--brand), var(--purple));
+    border-radius: 2px;
+    transition: width 0.4s ease;
+  }
+
+  .progress-label { font-size: 11px; color: var(--textSub); white-space: nowrap; font-weight: 600; }
+
+  /* ── Layout ── */
+  .layout { display: flex; min-height: calc(100vh - 64px); position: relative; z-index: 1; }
+
+  /* ── Sidebar Steps ── */
+  .sidebar {
+    width: 280px;
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    padding: 24px 0;
+    position: sticky; top: 64px;
+    height: calc(100vh - 64px);
+    overflow-y: auto;
+    flex-shrink: 0;
+  }
+
+  .sidebar-title {
+    font-size: 10px; font-weight: 700;
+    color: var(--textSub); letter-spacing: 1.5px;
+    text-transform: uppercase;
+    padding: 0 20px 12px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 8px;
+  }
+
+  .step-item {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 12px 20px;
+    cursor: pointer;
+    transition: all 0.2s;
+    border-right: 3px solid transparent;
+    border-left: none;
+  }
+
+  .step-item:hover { background: var(--brandDim); }
+
+  .step-item.active {
+    background: var(--brandDim);
+    border-right-color: var(--brand);
+  }
+
+  .step-item.done { opacity: 0.6; }
+
+  .step-num {
+    width: 28px; height: 28px; border-radius: 50%;
+    background: var(--card);
+    border: 2px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; color: var(--textSub);
+    flex-shrink: 0; transition: all 0.2s;
+  }
+
+  .step-item.active .step-num {
+    background: var(--brand);
+    border-color: var(--brand);
+    color: #fff;
+    box-shadow: 0 0 12px var(--brand);
+  }
+
+  .step-item.done .step-num {
+    background: var(--success);
+    border-color: var(--success);
+    color: #fff;
+  }
+
+  .step-info { flex: 1; }
+  .step-title { font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 2px; }
+  .step-desc  { font-size: 10px; color: var(--textSub); line-height: 1.5; }
+
+  /* ── Main Content ── */
+  .main {
+    flex: 1;
+    padding: 40px;
+    overflow-y: auto;
+    max-width: 900px;
+  }
+
+  /* ── Step Content ── */
+  .step-content { display: none; animation: fadeIn 0.3s ease; }
+  .step-content.visible { display: block; }
+
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* ── Step Header ── */
+  .step-header {
+    display: flex; align-items: center; gap: 16px;
+    margin-bottom: 32px;
+  }
+
+  .step-badge {
+    width: 48px; height: 48px; border-radius: 14px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 24px;
+    flex-shrink: 0;
+  }
+
+  .step-heading { font-size: 24px; font-weight: 900; color: var(--text); }
+  .step-subheading { font-size: 13px; color: var(--textSub); margin-top: 4px; }
+
+  /* ── Cards ── */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 24px;
+    margin-bottom: 20px;
+  }
+
+  .card-title {
+    font-size: 13px; font-weight: 700;
+    color: var(--brand); margin-bottom: 16px;
+    display: flex; align-items: center; gap: 8px;
+  }
+
+  /* ── Code Block ── */
+  .code-wrap { position: relative; margin: 16px 0; }
+
+  .code-block {
+    background: #030508;
+    border: 1px solid var(--border2);
+    border-radius: 10px;
+    padding: 18px 20px;
+    font-family: 'Fira Code', 'Courier New', monospace;
+    font-size: 12px;
+    color: #a8d8ea;
+    direction: ltr;
+    text-align: left;
+    overflow-x: auto;
+    line-height: 1.7;
+    white-space: pre;
+  }
+
+  .code-label {
+    position: absolute; top: -10px; right: 16px;
+    font-size: 9px; font-weight: 700;
+    background: var(--border2);
+    color: var(--textSub);
+    padding: 2px 10px; border-radius: 20px;
+    letter-spacing: 1px;
+  }
+
+  .copy-btn {
+    position: absolute; top: 8px; left: 10px;
+    background: var(--border2);
+    border: 1px solid var(--border);
+    color: var(--textSub); font-size: 10px;
+    padding: 4px 10px; border-radius: 6px;
+    cursor: pointer; transition: all 0.2s;
+    font-family: 'Cairo', sans-serif;
+  }
+
+  .copy-btn:hover { background: var(--brand); color: #fff; border-color: var(--brand); }
+  .copy-btn.copied { background: var(--success); color: #fff; border-color: var(--success); }
+
+  /* ── Steps List ── */
+  .steps-list { list-style: none; }
+  .steps-list li {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    line-height: 1.6;
+  }
+
+  .steps-list li:last-child { border-bottom: none; }
+
+  .step-icon {
+    width: 28px; height: 28px; border-radius: 50%;
+    background: var(--brandDim);
+    border: 1px solid var(--brand) + '44';
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; flex-shrink: 0;
+    margin-top: 2px;
+  }
+
+  /* ── Screenshot Mockup ── */
+  .mockup {
+    background: var(--card2);
+    border: 1px solid var(--border2);
+    border-radius: 12px;
+    overflow: hidden;
+    margin: 20px 0;
+  }
+
+  .mockup-bar {
+    background: #0d1020;
+    padding: 10px 16px;
+    display: flex; align-items: center; gap: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .mockup-dot { width: 10px; height: 10px; border-radius: 50%; }
+
+  .mockup-body { padding: 20px; font-size: 12px; }
+
+  /* ── Highlight Box ── */
+  .highlight {
+    display: flex; align-items: flex-start; gap: 12px;
+    padding: 14px 16px;
+    border-radius: 10px;
+    margin: 16px 0;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  .highlight.info    { background: #38bdf810; border: 1px solid #38bdf830; color: var(--info); }
+  .highlight.warning { background: #f59e0b10; border: 1px solid #f59e0b30; color: var(--warning); }
+  .highlight.success { background: #22c55e10; border: 1px solid #22c55e30; color: var(--success); }
+  .highlight.danger  { background: #ef444410; border: 1px solid #ef444430; color: var(--danger); }
+
+  .highlight-icon { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
+
+  /* ── Table ── */
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th {
+    background: var(--card2);
+    padding: 10px 14px;
+    font-weight: 700; color: var(--textSub);
+    text-align: right;
+    border-bottom: 1px solid var(--border2);
+  }
+  td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    vertical-align: middle;
+  }
+  tr:hover td { background: var(--brandDim); }
+
+  /* ── Navigation Buttons ── */
+  .nav-buttons {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-top: 40px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+
+  .nav-btn {
+    display: flex; align-items: center; gap: 8px;
+    padding: 12px 24px;
+    border-radius: 10px;
+    font-family: 'Cairo', sans-serif;
+    font-size: 13px; font-weight: 700;
+    cursor: pointer; transition: all 0.2s;
+    border: none;
+  }
+
+  .nav-btn.prev {
+    background: var(--card2);
+    border: 1px solid var(--border2);
+    color: var(--textSub);
+  }
+
+  .nav-btn.prev:hover { border-color: var(--brand); color: var(--brand); }
+
+  .nav-btn.next {
+    background: var(--brand);
+    color: #fff;
+    box-shadow: 0 0 20px #6366f140;
+  }
+
+  .nav-btn.next:hover { background: var(--brandL); transform: translateY(-1px); }
+
+  .nav-btn:disabled {
+    opacity: 0.3; cursor: not-allowed; transform: none !important;
+  }
+
+  /* ── Badge ── */
+  .badge {
+    display: inline-flex; align-items: center;
+    padding: 2px 10px; border-radius: 20px;
+    font-size: 10px; font-weight: 700;
+    border: 1px solid;
+  }
+
+  /* ── Role Cards ── */
+  .role-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 12px; margin: 16px 0;
+  }
+
+  .role-card {
+    background: var(--card2);
+    border: 1px solid var(--border2);
+    border-radius: 10px;
+    padding: 16px;
+  }
+
+  .role-name {
+    font-size: 13px; font-weight: 700; margin-bottom: 8px;
+    display: flex; align-items: center; gap: 8px;
+  }
+
+  .role-perms { font-size: 10px; color: var(--textSub); line-height: 1.8; }
+
+  /* ── Module Grid ── */
+  .module-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 10px; margin: 16px 0;
+  }
+
+  .module-card {
+    background: var(--card2);
+    border: 1px solid var(--border2);
+    border-radius: 10px;
+    padding: 14px;
+    text-align: center;
+    transition: all 0.2s;
+  }
+
+  .module-card:hover {
+    border-color: var(--brand);
+    background: var(--brandDim);
+    transform: translateY(-2px);
+  }
+
+  .module-icon { font-size: 24px; margin-bottom: 8px; }
+  .module-name { font-size: 11px; font-weight: 700; color: var(--text); }
+  .module-phase { font-size: 9px; color: var(--textSub); margin-top: 4px; }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: var(--surface); }
+  ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--brand); }
+
+  /* ── Done Screen ── */
+  .done-screen {
+    text-align: center; padding: 60px 40px;
+  }
+
+  .done-icon {
+    font-size: 80px; margin-bottom: 24px;
+    animation: bounce 1s ease infinite alternate;
+  }
+
+  @keyframes bounce {
+    from { transform: translateY(0); }
+    to   { transform: translateY(-10px); }
+  }
+
+  .done-title { font-size: 32px; font-weight: 900; color: var(--success); margin-bottom: 12px; }
+  .done-sub   { font-size: 15px; color: var(--textSub); }
+
+  @media (max-width: 768px) {
+    .sidebar { display: none; }
+    .main { padding: 20px; }
+    .header { padding: 0 20px; }
+    .progress-bar-wrap { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header class="header">
+  <div class="logo">
+    <div class="logo-icon">🏗️</div>
+    <div>
+      <div class="logo-text">TECHOFFICE ERP</div>
+      <div class="logo-sub">دليل التشغيل التفاعلي — v4.0</div>
+    </div>
+  </div>
+
+  <div class="progress-bar-wrap">
+    <div class="progress-track">
+      <div class="progress-fill" id="progressFill" style="width: 16.6%"></div>
+    </div>
+    <div class="progress-label" id="progressLabel">1 / 6</div>
+  </div>
+</header>
+
+<!-- LAYOUT -->
+<div class="layout">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="sidebar-title">🎬 خطوات التشغيل</div>
+
+    <div id="stepNav">
+      <!-- Steps injected by JS -->
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <main class="main" id="mainContent">
+
+    <!-- ═══════════════════════════════ STEP 1 ═══════════════════════════════ -->
+    <div class="step-content visible" id="step-1">
+      <div class="step-header">
+        <div class="step-badge" style="background: #6366f118; border: 1px solid #6366f130;">🗄️</div>
+        <div>
+          <div class="step-heading">إعداد قاعدة البيانات Supabase</div>
+          <div class="step-subheading">إنشاء المشروع وتشغيل ملفات SQL</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">📋 الخطوات التفصيلية</div>
+        <ul class="steps-list">
+          <li>
+            <div class="step-icon">1️⃣</div>
+            <div>سجّل دخولك على <strong style="color:var(--brand)">supabase.com</strong> — إنشاء حساب مجاني إذا لم يكن لديك</div>
+          </li>
+          <li>
+            <div class="step-icon">2️⃣</div>
+            <div>اضغط <strong>New Project</strong> — اختر اسماً مناسباً مثل <code style="color:var(--teal)">techoffice-prod</code> وكلمة مرور قوية للـ Database</div>
+          </li>
+          <li>
+            <div class="step-icon">3️⃣</div>
+            <div>اختر المنطقة: <strong>Europe West (Frankfurt)</strong> — الأقرب لمصر</div>
+          </li>
+          <li>
+            <div class="step-icon">4️⃣</div>
+            <div>انتظر حتى يكتمل الإنشاء (1-2 دقيقة)، ثم افتح <strong>SQL Editor</strong> من القائمة الجانبية</div>
+          </li>
+          <li>
+            <div class="step-icon">5️⃣</div>
+            <div>اضغط <strong>+ New query</strong> والصق محتوى الملف الأول <code style="color:var(--info)">sql/01-supabase-schema.sql</code> ثم شغّل ▶</div>
+          </li>
+          <li>
+            <div class="step-icon">6️⃣</div>
+            <div>افتح query جديد، والصق <code style="color:var(--info)">sql/02-tenant-erp-schema.sql</code> وشغّله كذلك</div>
+          </li>
+        </ul>
+      </div>
+
+      <div class="mockup">
+        <div class="mockup-bar">
+          <div class="mockup-dot" style="background:#ef4444"></div>
+          <div class="mockup-dot" style="background:#f59e0b"></div>
+          <div class="mockup-dot" style="background:#22c55e"></div>
+          <span style="margin-right: 12px; font-size: 11px; color: var(--textSub)">Supabase → SQL Editor</span>
+        </div>
+        <div class="mockup-body">
+          <div style="color: var(--textSub); margin-bottom: 12px; font-size: 11px;">📄 01-supabase-schema.sql — تنتهي النتيجة بـ:</div>
+          <div class="code-block" style="padding: 12px 16px; margin: 0;">
+<span style="color:#6b7494">-- ✅ النتيجة المتوقعة في SQL Editor:</span>
+<span style="color:#22c55e">CREATE TABLE</span>   <span style="color:#38bdf8">→ tenants</span>
+<span style="color:#22c55e">CREATE TABLE</span>   <span style="color:#38bdf8">→ superadmins</span>
+<span style="color:#22c55e">CREATE FUNCTION</span> <span style="color:#38bdf8">→ is_superadmin()</span>
+<span style="color:#22c55e">CREATE FUNCTION</span> <span style="color:#38bdf8">→ set_superadmin_role()</span>
+<span style="color:#22c55e">INSERT 0 5</span>     <span style="color:#6b7494">← بيانات تجريبية</span></div>
+        </div>
+      </div>
+
+      <div class="highlight warning">
+        <div class="highlight-icon">⚠️</div>
+        <div>شغّل الملف الأول <strong>قبل</strong> الثاني — الترتيب مهم لأن الثاني يعتمد على جداول الأول</div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════ STEP 2 ═══════════════════════════════ -->
+    <div class="step-content" id="step-2">
+      <div class="step-header">
+        <div class="step-badge" style="background: #a78bfa18; border: 1px solid #a78bfa30;">👑</div>
+        <div>
+          <div class="step-heading">إنشاء حساب السوبر أدمن</div>
+          <div class="step-subheading">تسجيل المستخدم ومنحه صلاحيات الإدارة الكاملة</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔐 خطوة 1 — إنشاء المستخدم في Supabase Auth</div>
+        <ul class="steps-list">
+          <li>
+            <div class="step-icon">1️⃣</div>
+            <div>افتح <strong>Authentication</strong> من القائمة الجانبية في Supabase</div>
+          </li>
+          <li>
+            <div class="step-icon">2️⃣</div>
+            <div>اضغط <strong>+ Add user → Create new user</strong></div>
+          </li>
+          <li>
+            <div class="step-icon">3️⃣</div>
+            <div>أدخل إيميل وباسورد قوي — مثلاً: <code style="color:var(--purple)">superadmin@techoffice.com</code></div>
+          </li>
+          <li>
+            <div class="step-icon">4️⃣</div>
+            <div>ضع علامة على <strong>Auto Confirm User</strong> لتفعيل الحساب فوراً</div>
+          </li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-title">⚡ خطوة 2 — منح صلاحية السوبر أدمن (SQL)</div>
+        <div class="code-wrap">
+          <div class="code-label">SQL EDITOR</div>
+          <button class="copy-btn" onclick="copyCode(this, 'code-superadmin')">نسخ</button>
+          <div class="code-block" id="code-superadmin">-- استبدل الإيميل بإيميلك الفعلي
+SELECT public.set_superadmin_role('superadmin@techoffice.com');
+
+-- ✅ النتيجة المتوقعة: set_superadmin_role
+--    (يعني نجح التنفيذ)</div>
+        </div>
+      </div>
+
+      <div class="highlight success">
+        <div class="highlight-icon">✅</div>
+        <div>بعد تنفيذ الدالة، سيظهر هذا المستخدم في جدول <code>superadmins</code>
+        وسيحمل <code>user_metadata.role = "superadmin"</code> في Supabase Auth</div>
+      </div>
+
+      <div class="highlight info">
+        <div class="highlight-icon">💡</div>
+        <div>يمكنك إنشاء أكثر من سوبر أدمن بتكرار نفس الدالة مع إيميلات مختلفة</div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════ STEP 3 ═══════════════════════════════ -->
+    <div class="step-content" id="step-3">
+      <div class="step-header">
+        <div class="step-badge" style="background: #38bdf818; border: 1px solid #38bdf830;">🔑</div>
+        <div>
+          <div class="step-heading">إعداد متغيرات البيئة</div>
+          <div class="step-subheading">ربط المشروع بـ Supabase عبر مفاتيح API</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">📋 أين تجد مفاتيح Supabase؟</div>
+        <ul class="steps-list">
+          <li>
+            <div class="step-icon">🔧</div>
+            <div>في Supabase → افتح <strong>Project Settings</strong> (⚙️ أسفل القائمة الجانبية)</div>
+          </li>
+          <li>
+            <div class="step-icon">🔌</div>
+            <div>اضغط على <strong>API</strong> من القائمة الفرعية</div>
+          </li>
+          <li>
+            <div class="step-icon">📋</div>
+            <div>ستجد: <strong>Project URL</strong> و <strong>anon public key</strong> — هذان هما المطلوبان</div>
+          </li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-title">📝 إنشاء ملف .env.local</div>
+        <div class="code-wrap">
+          <div class="code-label">TERMINAL</div>
+          <button class="copy-btn" onclick="copyCode(this, 'code-env-cmd')">نسخ</button>
+          <div class="code-block" id="code-env-cmd">cp .env.example .env.local</div>
+        </div>
+
+        <div style="margin-top: 16px;">
+          <div class="code-wrap">
+            <div class="code-label">.env.local</div>
+            <button class="copy-btn" onclick="copyCode(this, 'code-env-content')">نسخ</button>
+            <div class="code-block" id="code-env-content">VITE_SUPABASE_URL=https://xxxxxxxxxxx.supabase.co
+VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+
+# اختياري — بوابة الدفع Paymob
+VITE_PAYMOB_API_KEY=ZXlKaGJHY2lPaUpJVXpVeE1pSXNJblI1...
+VITE_PAYMOB_INTEGRATION_ID=123456</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="highlight warning">
+        <div class="highlight-icon">⚠️</div>
+        <div><strong>مهم:</strong> لا تشارك ملف <code>.env.local</code> مع أحد ولا ترفعه على GitHub.
+        المشروع يحتوي على <code>.gitignore</code> يمنع رفعه تلقائياً.</div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════ STEP 4 ═══════════════════════════════ -->
+    <div class="step-content" id="step-4">
+      <div class="step-header">
+        <div class="step-badge" style="background: #22c55e18; border: 1px solid #22c55e30;">🚀</div>
+        <div>
+          <div class="step-heading">تثبيت وتشغيل المشروع</div>
+          <div class="step-subheading">npm install → npm run dev → فتح المتصفح</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">💻 أوامر التشغيل</div>
+
+        <div style="margin-bottom: 12px; font-size: 12px; color: var(--textSub);">1️⃣ تثبيت الحزم (مرة واحدة فقط)</div>
+        <div class="code-wrap">
+          <div class="code-label">TERMINAL</div>
+          <button class="copy-btn" onclick="copyCode(this, 'code-npm-install')">نسخ</button>
+          <div class="code-block" id="code-npm-install">cd techoffice-erp
+npm install</div>
+        </div>
+
+        <div style="margin: 16px 0 12px; font-size: 12px; color: var(--textSub);">2️⃣ تشغيل بيئة التطوير</div>
+        <div class="code-wrap">
+          <div class="code-label">TERMINAL</div>
+          <button class="copy-btn" onclick="copyCode(this, 'code-npm-dev')">نسخ</button>
+          <div class="code-block" id="code-npm-dev">npm run dev</div>
+        </div>
+
+        <div style="margin: 16px 0 12px; font-size: 12px; color: var(--textSub);">3️⃣ النتيجة المتوقعة في الـ terminal</div>
+        <div class="code-block" style="margin: 0; color: #22c55e;">
+  VITE v5.4.2  ready in 1234 ms
+
+  ➜  Local:   http://localhost:3000/
+  ➜  Network: http://192.168.1.x:3000/</div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🌐 فتح التطبيق</div>
+        <ul class="steps-list">
+          <li>
+            <div class="step-icon">🔗</div>
+            <div>افتح المتصفح على <strong style="color:var(--teal)">http://localhost:3000</strong></div>
+          </li>
+          <li>
+            <div class="step-icon">📧</div>
+            <div>أدخل إيميل السوبر أدمن الذي أنشأته في الخطوة 2</div>
+          </li>
+          <li>
+            <div class="step-icon">🔐</div>
+            <div>أدخل الباسورد المحدد عند إنشاء المستخدم في Supabase</div>
+          </li>
+          <li>
+            <div class="step-icon">🎉</div>
+            <div>ستنتقل تلقائياً لـ <strong style="color:var(--brand)">لوحة السوبر أدمن</strong> لأن النظام يكتشف الدور تلقائياً</div>
+          </li>
+        </ul>
+      </div>
+
+      <div class="highlight success">
+        <div class="highlight-icon">✅</div>
+        <div>المشروع يدعم التشغيل على الشبكة المحلية — استخدم <code>http://192.168.x.x:3000</code>
+        للوصول من أجهزة أخرى على نفس الشبكة</div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════ STEP 5 ═══════════════════════════════ -->
+    <div class="step-content" id="step-5">
+      <div class="step-header">
+        <div class="step-badge" style="background: #f59e0b18; border: 1px solid #f59e0b30;">🏢</div>
+        <div>
+          <div class="step-heading">لوحة السوبر أدمن</div>
+          <div class="step-subheading">إدارة الشركات والباقات والاشتراكات</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">📊 ما تراه عند الدخول بحساب السوبر أدمن</div>
+        <div class="mockup">
+          <div class="mockup-bar">
+            <div class="mockup-dot" style="background:#ef4444"></div>
+            <div class="mockup-dot" style="background:#f59e0b"></div>
+            <div class="mockup-dot" style="background:#22c55e"></div>
+            <span style="margin-right: 12px; font-size: 11px; color: var(--textSub)">TECHOFFICE ERP — لوحة السوبر أدمن</span>
+          </div>
+          <div class="mockup-body">
+            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px;">
+              <div style="background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px; text-align:center;">
+                <div style="font-size:20px; font-weight:900; color:var(--brand)">5</div>
+                <div style="font-size:9px; color:var(--textSub); margin-top:4px">الشركات النشطة</div>
+              </div>
+              <div style="background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px; text-align:center;">
+                <div style="font-size:20px; font-weight:900; color:var(--success)">210,000</div>
+                <div style="font-size:9px; color:var(--textSub); margin-top:4px">الإيراد السنوي ج.م</div>
+              </div>
+              <div style="background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px; text-align:center;">
+                <div style="font-size:20px; font-weight:900; color:var(--warning)">1</div>
+                <div style="font-size:9px; color:var(--textSub); margin-top:4px">ينتهي قريباً</div>
+              </div>
+              <div style="background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px; text-align:center;">
+                <div style="font-size:20px; font-weight:900; color:var(--purple)">27</div>
+                <div style="font-size:9px; color:var(--textSub); margin-top:4px">إجمالي المستخدمين</div>
+              </div>
+            </div>
+            <div style="font-size:10px; color:var(--textSub); text-align:center;">↑ لوحة الإحصائيات الفورية</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">⚡ إضافة شركة جديدة (Tenant)</div>
+        <ul class="steps-list">
+          <li>
+            <div class="step-icon">➕</div>
+            <div>اضغط زر <strong>+ شركة جديدة</strong> في أعلى يمين الصفحة</div>
+          </li>
+          <li>
+            <div class="step-icon">📝</div>
+            <div>أدخل: <strong>اسم الشركة</strong> — <strong>Slug</strong> (حروف إنجليزية صغيرة بدون مسافات) — <strong>معلومات التواصل</strong></div>
+          </li>
+          <li>
+            <div class="step-icon">📦</div>
+            <div>اختر الباقة: <span class="badge" style="color:var(--info); border-color:var(--info)44; background:var(--info)11;">Basic</span> أو <span class="badge" style="color:var(--brand); border-color:var(--brand)44; background:var(--brand)11;">Pro</span> أو <span class="badge" style="color:var(--purple); border-color:var(--purple)44; background:var(--purple)11;">Enterprise</span></div>
+          </li>
+          <li>
+            <div class="step-icon">📅</div>
+            <div>حدد تاريخ انتهاء الاشتراك</div>
+          </li>
+          <li>
+            <div class="step-icon">💾</div>
+            <div>اضغط <strong>حفظ</strong> — ستُضاف الشركة فوراً في Supabase</div>
+          </li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-title">📦 الباقات المتاحة</div>
+        <table>
+          <thead>
+            <tr>
+              <th>الباقة</th>
+              <th>المستخدمون</th>
+              <th>المشاريع</th>
+              <th>السعر / سنة</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="badge" style="color:var(--info); border-color:var(--info)44; background:var(--info)11;">Basic</span></td>
+              <td>3 مستخدمين</td>
+              <td>5 مشاريع</td>
+              <td style="color:var(--info); font-weight:700;">20,000 ج.م</td>
+            </tr>
+            <tr>
+              <td><span class="badge" style="color:var(--brand); border-color:var(--brand)44; background:var(--brand)11;">Pro</span></td>
+              <td>10 مستخدمين</td>
+              <td>20 مشروع</td>
+              <td style="color:var(--brand); font-weight:700;">50,000 ج.م</td>
+            </tr>
+            <tr>
+              <td><span class="badge" style="color:var(--purple); border-color:var(--purple)44; background:var(--purple)11;">Enterprise</span></td>
+              <td>غير محدود</td>
+              <td>غير محدود</td>
+              <td style="color:var(--purple); font-weight:700;">90,000 ج.م</td>
+            </tr>
+            <tr>
+              <td><span class="badge" style="color:var(--teal); border-color:var(--teal)44; background:var(--teal)11;">تفاوضي</span></td>
+              <td>غير محدود</td>
+              <td>غير محدود</td>
+              <td style="color:var(--teal); font-weight:700;">حسب الاتفاق</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════ STEP 6 ═══════════════════════════════ -->
+    <div class="step-content" id="step-6">
+      <div class="step-header">
+        <div class="step-badge" style="background: #2dd4bf18; border: 1px solid #2dd4bf30;">🎯</div>
+        <div>
+          <div class="step-heading">وحدات النظام الكاملة</div>
+          <div class="step-subheading">34 وحدة متكاملة لإدارة المكتب الفني</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">🔐 أدوار المستخدمين داخل الشركة</div>
+        <div class="role-grid">
+          <div class="role-card">
+            <div class="role-name">
+              <span style="font-size:18px">👑</span>
+              <span style="color:var(--brand)">Admin</span>
+            </div>
+            <div class="role-perms">✔ إدارة كاملة<br>✔ إدارة المستخدمين<br>✔ اعتماد المستخلصات<br>✔ الإعدادات</div>
+          </div>
+          <div class="role-card">
+            <div class="role-name">
+              <span style="font-size:18px">👔</span>
+              <span style="color:var(--purple)">Manager</span>
+            </div>
+            <div class="role-perms">✔ إدارة المشاريع<br>✔ المستخلصات كاملة<br>✔ الضمانات<br>✔ التقارير</div>
+          </div>
+          <div class="role-card">
+            <div class="role-name">
+              <span style="font-size:18px">👷</span>
+              <span style="color:var(--teal)">Engineer</span>
+            </div>
+            <div class="role-perms">✔ عرض المشاريع<br>✔ إنشاء مستخلص<br>✔ تقديم مستخلص<br>✔ التقارير</div>
+          </div>
+          <div class="role-card">
+            <div class="role-name">
+              <span style="font-size:18px">👁</span>
+              <span style="color:var(--textSub)">Viewer</span>
+            </div>
+            <div class="role-perms">✔ عرض Dashboard<br>✔ التقارير فقط<br>✘ لا كتابة<br>✘ لا تعديل</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">📦 الوحدات (34 وحدة)</div>
+        <div class="module-grid">
+          <div class="module-card"><div class="module-icon">📊</div><div class="module-name">Dashboard</div><div class="module-phase">المرحلة 4-5</div></div>
+          <div class="module-card"><div class="module-icon">🏗</div><div class="module-name">المشاريع</div><div class="module-phase">المرحلة 4-5</div></div>
+          <div class="module-card"><div class="module-icon">💰</div><div class="module-name">المستخلصات</div><div class="module-phase">المرحلة 4-5</div></div>
+          <div class="module-card"><div class="module-icon">📋</div><div class="module-name">البند الكمي BOQ</div><div class="module-phase">المرحلة 4-5</div></div>
+          <div class="module-card"><div class="module-icon">✉️</div><div class="module-name">الخطابات</div><div class="module-phase">المرحلة 4-5</div></div>
+          <div class="module-card"><div class="module-icon">🛡</div><div class="module-name">الضمانات</div><div class="module-phase">المرحلة 4-5</div></div>
+          <div class="module-card"><div class="module-icon">🔄</div><div class="module-name">أوامر التغيير</div><div class="module-phase">المرحلة 4-5</div></div>
+          <div class="module-card"><div class="module-icon">✅</div><div class="module-name">الجودة NCR</div><div class="module-phase">المرحلة 4-5</div></div>
+          <div class="module-card"><div class="module-icon">📝</div><div class="module-name">سجل الأحداث</div><div class="module-phase">المرحلة 4-5</div></div>
+          <div class="module-card"><div class="module-icon">🧾</div><div class="module-name">فاتورة ETA</div><div class="module-phase">المرحلة 6</div></div>
+          <div class="module-card"><div class="module-icon">🤖</div><div class="module-name">AI Chat</div><div class="module-phase">المرحلة 6</div></div>
+          <div class="module-card"><div class="module-icon">📈</div><div class="module-name">الميزانية EVM</div><div class="module-phase">المرحلة 7</div></div>
+          <div class="module-card"><div class="module-icon">💳</div><div class="module-name">التدفق النقدي</div><div class="module-phase">المرحلة 7</div></div>
+          <div class="module-card"><div class="module-icon">🗺</div><div class="module-name">خريطة الكيلومترات</div><div class="module-phase">المرحلة 7</div></div>
+          <div class="module-card"><div class="module-icon">📉</div><div class="module-name">منحنى S</div><div class="module-phase">المرحلة 7</div></div>
+          <div class="module-card"><div class="module-icon">📅</div><div class="module-name">جانت Gantt</div><div class="module-phase">المرحلة 7</div></div>
+          <div class="module-card"><div class="module-icon">⏱</div><div class="module-name">EOT التمديد</div><div class="module-phase">المرحلة 7</div></div>
+          <div class="module-card"><div class="module-icon">🤝</div><div class="module-name">مقاولو الباطن</div><div class="module-phase">المرحلة 7</div></div>
+          <div class="module-card"><div class="module-icon">🦺</div><div class="module-name">السلامة</div><div class="module-phase">المرحلة 7</div></div>
+          <div class="module-card"><div class="module-icon">🧱</div><div class="module-name">المواد</div><div class="module-phase">المرحلة 7</div></div>
+          <div class="module-card"><div class="module-icon">📓</div><div class="module-name">التمام اليومي</div><div class="module-phase">المرحلة 7</div></div>
+          <div class="module-card"><div class="module-icon">👥</div><div class="module-name">المستخدمين</div><div class="module-phase">المرحلة 7</div></div>
+          <div class="module-card"><div class="module-icon">⚙️</div><div class="module-name">الإعدادات</div><div class="module-phase">المرحلة 7</div></div>
+        </div>
+      </div>
+
+      <!-- DONE -->
+      <div class="done-screen">
+        <div class="done-icon">🎉</div>
+        <div class="done-title">النظام جاهز للتشغيل!</div>
+        <div class="done-sub" style="margin-top: 12px; margin-bottom: 32px;">
+          اتبع الخطوات الست وستكون لوحة السوبر أدمن جاهزة خلال 15 دقيقة
+        </div>
+
+        <div style="display: flex; justify-content: center; gap: 16px; flex-wrap: wrap;">
+          <div style="background:var(--card2); border:1px solid var(--border2); border-radius:12px; padding:20px; text-align:center; min-width:140px;">
+            <div style="font-size:28px; margin-bottom:8px;">🗄️</div>
+            <div style="font-size:12px; font-weight:700; color:var(--brand);">supabase.com</div>
+            <div style="font-size:10px; color:var(--textSub); margin-top:4px;">قاعدة البيانات</div>
+          </div>
+          <div style="background:var(--card2); border:1px solid var(--border2); border-radius:12px; padding:20px; text-align:center; min-width:140px;">
+            <div style="font-size:28px; margin-bottom:8px;">📁</div>
+            <div style="font-size:12px; font-weight:700; color:var(--success);">src/</div>
+            <div style="font-size:10px; color:var(--textSub); margin-top:4px;">ملفات المشروع</div>
+          </div>
+          <div style="background:var(--card2); border:1px solid var(--border2); border-radius:12px; padding:20px; text-align:center; min-width:140px;">
+            <div style="font-size:28px; margin-bottom:8px;">🚀</div>
+            <div style="font-size:12px; font-weight:700; color:var(--warning);">npm run dev</div>
+            <div style="font-size:10px; color:var(--textSub); margin-top:4px;">تشغيل التطبيق</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- NAV BUTTONS -->
+    <div class="nav-buttons">
+      <button class="nav-btn prev" id="btnPrev" onclick="navigate(-1)" disabled>
+        ← السابق
+      </button>
+      <button class="nav-btn next" id="btnNext" onclick="navigate(1)">
+        التالي ←
+      </button>
+    </div>
+
+  </main>
+</div>
+
+<script>
+const STEPS = [
+  { num: 1, icon: '🗄️', title: 'إعداد Supabase', desc: 'إنشاء المشروع وتشغيل SQL' },
+  { num: 2, icon: '👑', title: 'إنشاء السوبر أدمن', desc: 'تسجيل المستخدم ومنح الصلاحيات' },
+  { num: 3, icon: '🔑', title: 'متغيرات البيئة', desc: 'ربط المشروع بـ Supabase' },
+  { num: 4, icon: '🚀', title: 'تشغيل المشروع', desc: 'npm install & npm run dev' },
+  { num: 5, icon: '🏢', title: 'لوحة السوبر أدمن', desc: 'إدارة الشركات والباقات' },
+  { num: 6, icon: '🎯', title: 'وحدات النظام', desc: '34 وحدة متكاملة' },
+];
+
+let current = 1;
+const total  = STEPS.length;
+
+// Build sidebar
+const nav = document.getElementById('stepNav');
+STEPS.forEach(s => {
+  const el = document.createElement('div');
+  el.className = 'step-item' + (s.num === 1 ? ' active' : '');
+  el.id = 'nav-' + s.num;
+  el.onclick = () => goTo(s.num);
+  el.innerHTML = `
+    <div class="step-num" id="sn-${s.num}">${s.icon}</div>
+    <div class="step-info">
+      <div class="step-title">${s.title}</div>
+      <div class="step-desc">${s.desc}</div>
+    </div>`;
+  nav.appendChild(el);
+});
+
+function goTo(n) {
+  // Hide current
+  document.getElementById('step-' + current).classList.remove('visible');
+  document.getElementById('nav-' + current).classList.remove('active');
+  if (current < n) document.getElementById('nav-' + current).classList.add('done');
+
+  current = n;
+
+  // Show new
+  document.getElementById('step-' + current).classList.add('visible');
+  document.getElementById('nav-' + current).classList.remove('done');
+  document.getElementById('nav-' + current).classList.add('active');
+
+  // Update progress
+  const pct = (current / total * 100).toFixed(1);
+  document.getElementById('progressFill').style.width = pct + '%';
+  document.getElementById('progressLabel').textContent = current + ' / ' + total;
+
+  // Update buttons
+  document.getElementById('btnPrev').disabled = current === 1;
+  document.getElementById('btnNext').disabled = current === total;
+  if (current === total) document.getElementById('btnNext').textContent = '✅ اكتمل';
+  else document.getElementById('btnNext').textContent = 'التالي ←';
+
+  // Scroll to top
+  document.getElementById('mainContent').scrollTop = 0;
+}
+
+function navigate(dir) { if (current + dir >= 1 && current + dir <= total) goTo(current + dir); }
+
+function copyCode(btn, id) {
+  const code = document.getElementById(id)?.textContent || '';
+  navigator.clipboard.writeText(code.trim()).then(() => {
+    btn.textContent = '✅ تم النسخ';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'نسخ'; btn.classList.remove('copied'); }, 2000);
+  });
+}
+</script>
+</body>
+</html>
