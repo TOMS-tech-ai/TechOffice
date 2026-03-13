@@ -1913,3 +1913,19 @@ export default function App() {
     </div>
   );
 }
+
+
+// ── Named Exports for phase7 ──
+export {
+  ProjectsScreen,
+  ExtractsScreen,
+  BOQScreen,
+  LettersScreen,
+  GuaranteesScreen,
+  VariationOrdersScreen,
+  QualityScreen,
+  AuditLogScreen,
+  calcEgyptianExtract,
+  EgyptianCalcModal,
+  MOCK,
+};

@@ -23,6 +23,12 @@
 
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import {
+  ProjectsScreen, ExtractsScreen, BOQScreen,
+  LettersScreen, GuaranteesScreen, VariationOrdersScreen,
+  QualityScreen, AuditLogScreen,
+} from '@modules/phases4-5/index.jsx';
+import { AIChatScreen } from '@modules/phase6/index.jsx';
+import {
   AreaChart, Area, LineChart, Line, BarChart, Bar, ComposedChart,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   ReferenceLine, Legend, RadarChart, Radar, PolarGrid,
