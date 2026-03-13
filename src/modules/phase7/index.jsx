@@ -1548,11 +1548,18 @@ const ALL_MODULES = [
   ]},
 ];
 
-export default function AppV4() {
-  const [user, setUser] = useState(null);
+export default function AppV4({ user: supabaseUser, onLogout }) {
   const [module, setModule] = useState("dashboard");
   const [toasts, setToasts] = useState([]);
   const [collapsed, setCollapsed] = useState(false);
+
+  const user = supabaseUser ? {
+    id:      supabaseUser.id,
+    name:    supabaseUser.user_metadata?.name || supabaseUser.email,
+    role:    supabaseUser.user_metadata?.role || "مدير",
+    company: supabaseUser.user_metadata?.tenant_slug || "شركتك",
+    email:   supabaseUser.email,
+  } : null;
 
   const addToast = useCallback((msg, type = "info") => {
     const id = Date.now();
@@ -1560,7 +1567,7 @@ export default function AppV4() {
     setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 3500);
   }, []);
 
-  if (!user) return <LoginScreen onLogin={setUser} />;
+  if (!user) return <LoginScreen onLogin={() => {}} />;
 
   const props = { addToast };
 
@@ -1646,7 +1653,7 @@ export default function AppV4() {
           <div style={{ padding: "10px 14px", borderTop: `1px solid ${C.border}` }}>
             <div style={{ fontSize: 10, color: C.text, fontWeight: 700 }}>{user.name}</div>
             <div style={{ fontSize: 9, color: C.muted }}>{user.role} — {user.company}</div>
-            <button onClick={() => setUser(null)} style={{ marginTop: 8, width: "100%", padding: "5px 0", background: "transparent", border: `1px solid ${C.border}`, borderRadius: 5, color: C.muted, fontSize: 9, cursor: "pointer", fontFamily: "inherit" }}>
+            <button onClick={() => onLogout && onLogout()} style={{ marginTop: 8, width: "100%", padding: "5px 0", background: "transparent", border: `1px solid ${C.border}`, borderRadius: 5, color: C.muted, fontSize: 9, cursor: "pointer", fontFamily: "inherit" }}>
               تسجيل الخروج
             </button>
           </div>
