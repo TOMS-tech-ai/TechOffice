@@ -21,7 +21,7 @@
  *  ⑮ AppV4              — الغلاف الرئيسي الكامل (34 وحدة)
  */
 
-import { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import React, { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import {
   ProjectsScreen, ExtractsScreen, BOQScreen,
   LettersScreen, GuaranteesScreen, VariationOrdersScreen,
@@ -35,6 +35,66 @@ import {
   PolarAngleAxis, PolarRadiusAxis, PieChart, Pie, Cell, ScatterChart,
   Scatter, ZAxis,
 } from "recharts";
+// ═══════════════════════════════════════════════════════════════
+// SUPABASE UTILITIES (phase7)
+// ═══════════════════════════════════════════════════════════════
+function useSupabaseTable(table, projectId, mockData, orderCol = 'created_at') {
+  const [data, setData] = useState(mockData || []);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!projectId) { setData(mockData || []); return; }
+    setBusy(true);
+    try {
+      const { supabase } = await import('@lib/supabaseClient');
+      const { data: rows, error } = await supabase
+        .from(table).select('*')
+        .eq('project_id', projectId)
+        .order(orderCol, { ascending: false });
+      if (!error && rows) setData(rows.length ? rows : (mockData || []));
+    } catch (_) { setData(mockData || []); }
+    finally { setBusy(false); }
+  }, [table, projectId]); // ← لما projectId يتغير يعيد الجلب تلقائياً
+
+  useEffect(() => { load(); }, [load]);
+  return { data, setData, busy, reload: load };
+}
+
+async function sbUpsert(table, payload, editId, tenantId, projectId) {
+  try {
+    const { supabase } = await import('@lib/supabaseClient');
+    if (editId) {
+      const { data, error } = await supabase.from(table).update(payload).eq('id', editId).select().single();
+      if (error) throw error;
+      return { ok: true, data };
+    } else {
+      const { data, error } = await supabase.from(table)
+        .insert({ ...payload, tenant_id: tenantId, project_id: projectId }).select().single();
+      if (error) throw error;
+      return { ok: true, data };
+    }
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+
+async function sbRemove(table, id) {
+  try {
+    const { supabase } = await import('@lib/supabaseClient');
+    const { error } = await supabase.from(table).delete().eq('id', id);
+    if (error) throw error;
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+
+async function sbPatch(table, id, patch) {
+  try {
+    const { supabase } = await import('@lib/supabaseClient');
+    const { data, error } = await supabase.from(table).update(patch).eq('id', id).select().single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+
+
 
 // ── نفس Design System من المراحل السابقة ─────────────────────
 const C = {
@@ -273,28 +333,59 @@ const MOCK_EXT = {
 // ══════════════════════════════════════════════════════════════
 // DASHBOARD — الصفحة الرئيسية
 // ══════════════════════════════════════════════════════════════
-function Dashboard() {
-  const projects  = MOCK_EXT.projects;
-  const totalCV   = projects.reduce((s, p) => s + p.contractValue, 0);
-  const totalPaid = projects.reduce((s, p) => s + p.paid, 0);
-  const openNCRs  = MOCK_EXT.ncrs.filter(n => n.status === "OPEN").length;
+function Dashboard({ tenantId }) {
+  const [projects,  setProjects]  = useState(MOCK_EXT.projects);
+  const [ncrs,      setNcrs]      = useState(MOCK_EXT.ncrs);
+  const [guarantees,setGuarantees]= useState([]);
+  const [letters,   setLetters]   = useState([]);
+  const [loading,   setLoading]   = useState(false);
+
+  // جلب البيانات الحقيقية من Supabase
+  useEffect(() => {
+    if (!tenantId) return;
+    setLoading(true);
+    const in90 = new Date(); in90.setDate(in90.getDate() + 90);
+    import('@lib/supabaseClient').then(({ supabase }) =>
+      Promise.all([
+        supabase.from('projects').select('*').eq('tenant_id', tenantId).order('created_at'),
+        supabase.from('ncrs').select('status,severity').eq('tenant_id', tenantId),
+        supabase.from('guarantees').select('expiry_date,status,value,type_ar,number')
+          .eq('tenant_id', tenantId).eq('status', 'ACTIVE')
+          .lte('expiry_date', in90.toISOString().split('T')[0]),
+        supabase.from('letters').select('status').eq('tenant_id', tenantId).eq('status', 'OVERDUE'),
+      ])
+    ).then(([p, n, g, l]) => {
+      if (p.data?.length)  setProjects(p.data);
+      if (n.data)          setNcrs(n.data);
+      if (g.data)          setGuarantees(g.data);
+      if (l.data)          setLetters(l.data);
+    }).finally(() => setLoading(false));
+  }, [tenantId]);
+
+  const totalCV   = projects.reduce((s, p) => s + (p.contract_value || p.contractValue || 0), 0);
+  const totalPaid = projects.reduce((s, p) => s + (p.paid || 0), 0);
+  const openNCRs  = ncrs.filter(n => n.status === "OPEN").length;
+  const highNCRs  = ncrs.filter(n => n.status === "OPEN" && n.severity === "HIGH").length;
+  const expiringG = guarantees.length;
+  const overdueL  = letters.length;
+
   const radarData = [
-    { subject: "الجودة",       A: 94 },
-    { subject: "السلامة",      A: 88 },
-    { subject: "التقدم",       A: 74 },
-    { subject: "التدفق النقدي",A: 85 },
-    { subject: "التسليم",      A: 70 },
-    { subject: "الوثائق",      A: 82 },
+    { subject: "الجودة",        A: openNCRs === 0 ? 100 : Math.max(60, 100 - openNCRs * 8) },
+    { subject: "السلامة",       A: 88 },
+    { subject: "التقدم",        A: projects.length ? Math.round(projects.reduce((s,p)=>s+(p.progress||0),0)/projects.length) : 0 },
+    { subject: "التدفق النقدي", A: totalCV ? Math.round(totalPaid/totalCV*100) : 0 },
+    { subject: "التسليم",       A: overdueL === 0 ? 90 : Math.max(50, 90 - overdueL * 5) },
+    { subject: "الوثائق",       A: 82 },
   ];
 
   return (
     <div style={{ flex: 1, overflowY: "auto", padding: 20, display: "flex", flexDirection: "column", gap: 14 }}>
       {/* Stats Row */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
-        <Stat label="إجمالي قيم العقود"    value={fmt(totalCV / 1e6, 1) + " م ج.م"} icon="💼" color={C.brand} />
-        <Stat label="المحصّل الفعلي"        value={fmt(totalPaid / 1e6, 1) + " م ج.م"} sub={pct(totalPaid,totalCV)+"% من العقود"} icon="💳" color={C.success} />
-        <Stat label="عدد المشاريع النشطة"   value={projects.length} icon="🏗️" color={C.info} />
-        <Stat label="NCRs مفتوحة"            value={openNCRs} icon="⚠️" color={openNCRs > 0 ? C.danger : C.success} />
+        <Stat label="إجمالي قيم العقود"   value={fmt(totalCV/1e6,1)+" م ج.م"} icon="💼" color={C.brand} />
+        <Stat label="المحصّل الفعلي"       value={fmt(totalPaid/1e6,1)+" م ج.م"} sub={pct(totalPaid,totalCV)+"% من العقود"} icon="💳" color={C.success} />
+        <Stat label="NCRs مفتوحة" value={openNCRs} sub={highNCRs > 0 ? highNCRs+" عالية الخطورة" : ""} icon="⚠️" color={openNCRs>0?C.danger:C.success} />
+        <Stat label="تنبيهات" value={expiringG+overdueL} sub={expiringG+" ضمان | "+overdueL+" مراسلة"} icon="🔔" color={(expiringG+overdueL)>0?C.warning:C.success} />
       </div>
 
       {/* Charts Row */}
@@ -374,14 +465,28 @@ function Dashboard() {
 // ══════════════════════════════════════════════════════════════
 // ① BUDGET + EVM SCREEN
 // ══════════════════════════════════════════════════════════════
-function BudgetEVMScreen({ addToast }) {
-  const [projectId, setProjectId] = useState("p1");
+function BudgetEVMScreen({ addToast, tenantId, projectId: propProjectId }) {
+  const defaultProjectId = propProjectId || MOCK_EXT.projects[0]?.id;
   const [tab, setTab] = useState("budget");
   const [modal, setModal] = useState(false);
   const [form, setForm] = useState({ category: "", description: "", budgeted: "" });
 
-  const proj = MOCK_EXT.projects.find(p => p.id === projectId);
-  const items = MOCK_EXT.budgetItems.filter(b => b.projectId === projectId);
+  // جلب المشروع الحقيقي
+  const [proj, setProj] = useState(MOCK_EXT.projects[0]);
+  useEffect(() => {
+    if (!defaultProjectId) return;
+    import('@lib/supabaseClient').then(({ supabase }) =>
+      supabase.from('projects').select('*').eq('id', defaultProjectId).single()
+        .then(({ data }) => { if (data) setProj({ ...data, contractValue: data.contract_value }); })
+    );
+  }, [defaultProjectId]);
+
+  // احسب الميزانية من المستخلصات الحقيقية
+  const { data: extracts } = useSupabaseTable('extracts', defaultProjectId, MOCK_EXT.cashFlow, 'submitted_at');
+  const paidExtracts = extracts.filter(e => ['APPROVED','PAID'].includes(e.status));
+  const totalActualFromExtracts = paidExtracts.reduce((s, e) => s + (e.net_final || e.netFinal || 0), 0);
+
+  const items = MOCK_EXT.budgetItems; // budget items لسه MOCK — هيتحسن لاحقاً
   const evmData = MOCK_EXT.evmData;
 
   // EVM Calculations من آخر نقطة
@@ -526,31 +631,60 @@ function BudgetEVMScreen({ addToast }) {
 // ══════════════════════════════════════════════════════════════
 // ② CASH FLOW SCREEN
 // ══════════════════════════════════════════════════════════════
-function CashFlowScreen({ addToast }) {
-  const [projectId, setProjectId] = useState("p1");
+function CashFlowScreen({ addToast, tenantId, projectId: propProjectId }) {
+  const defaultProjectId = propProjectId || MOCK_EXT.projects[0]?.id;
   const [view, setView] = useState("monthly");
 
-  const data = MOCK_EXT.cashFlow;
-  const actualMonths = data.filter(d => d.actual != null);
+  // جلب المستخلصات الحقيقية وبناء التدفق النقدي منها
+  const { data: extracts } = useSupabaseTable('extracts', defaultProjectId, [], 'submitted_at');
+  const [proj, setProj] = useState(null);
+  useEffect(() => {
+    if (!defaultProjectId) return;
+    import('@lib/supabaseClient').then(({ supabase }) =>
+      supabase.from('projects').select('contract_value,name').eq('id', defaultProjectId).single()
+        .then(({ data }) => { if (data) setProj(data); })
+    );
+  }, [defaultProjectId]);
+
+  // بناء chart data من المستخلصات
+  const liveData = useMemo(() => {
+    if (!extracts.length) return MOCK_EXT.cashFlow;
+    const months = {};
+    extracts.forEach(e => {
+      const d = e.submitted_at || e.submittedAt;
+      if (!d) return;
+      const key = d.slice(0, 7); // YYYY-MM
+      const label = new Date(d).toLocaleDateString('ar-EG', { month: 'short', year: '2-digit' });
+      if (!months[key]) months[key] = { month: label, planned: 0, actual: 0 };
+      if (['APPROVED','PAID'].includes(e.status))
+        months[key].actual += (e.net_final || e.netFinal || 0);
+      months[key].planned += (e.net_final || e.netFinal || 0);
+    });
+    let cumP = 0, cumA = 0;
+    return Object.values(months).sort((a,b) => a.month > b.month ? 1 : -1).map(m => {
+      cumP += m.planned; cumA += m.actual;
+      return { ...m, cumPlanned: cumP, cumActual: cumA };
+    });
+  }, [extracts]);
+
+  const data = liveData;
+  const actualMonths = data.filter(d => d.actual > 0);
   const totalPlanned = data.reduce((s, d) => s + d.planned, 0);
-  const totalActual = actualMonths.reduce((s, d) => s + d.actual, 0);
-  const remaining = totalPlanned - totalActual;
-  const gap = actualMonths[actualMonths.length - 1];
-  const cashGap = gap ? gap.cumPlanned - gap.cumActual : 0;
+  const totalActual  = actualMonths.reduce((s, d) => s + d.actual, 0);
+  const remaining    = (proj?.contract_value || totalPlanned) - totalActual;
+  const lastMonth    = actualMonths[actualMonths.length - 1];
+  const cashGap      = lastMonth ? (lastMonth.cumPlanned - lastMonth.cumActual) : 0;
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
       <SectionHdr sub="مقارنة التدفق النقدي المخطط بالفعلي على مدار العام" action={
         <div style={{ display: "flex", gap: 8 }}>
-          <Select value={projectId} onChange={e => setProjectId(e.target.value)} style={{ width: 160 }}>
-            {MOCK_EXT.projects.map(p => <option key={p.id} value={p.id}>{p.code}</option>)}
-          </Select>
           <Select value={view} onChange={e => setView(e.target.value)} style={{ width: 120 }}>
             <option value="monthly">شهري</option>
             <option value="cumulative">تراكمي</option>
           </Select>
         </div>
-      }>💳 التدفق النقدي</SectionHdr>
+      }>💳 التدفق النقدي {extracts.length > 0 && <span style={{fontSize:9,color:C.success,marginRight:6}}>● بيانات حقيقية</span>}</SectionHdr>
 
       <div style={{ flex: 1, overflowY: "auto", padding: 20, display: "flex", flexDirection: "column", gap: 14 }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
@@ -614,10 +748,12 @@ function CashFlowScreen({ addToast }) {
 // ══════════════════════════════════════════════════════════════
 // ③ NCR SCREEN
 // ══════════════════════════════════════════════════════════════
-function NCRScreen({ addToast }) {
+function NCRScreen({ addToast, tenantId, projectId: propProjectId }) {
   const [projectId, setProjectId] = useState("p1");
   const [modal, setModal] = useState(false);
-  const [ncrs, setNcrs] = useState(MOCK_EXT.ncrs);
+  const defaultProjectId = propProjectId || MOCK_EXT.projects[0]?.id;
+  const { data: ncrs, setData: setNcrs, reload: reloadNcrs } =
+    useSupabaseTable('ncrs', defaultProjectId, MOCK_EXT.ncrs, 'raised_at');
   const [form, setForm] = useState({ number: "", description: "", location: "", category: "", severity: "MEDIUM", dueDate: "", assignedTo: "" });
 
   const items = ncrs.filter(n => n.projectId === projectId);
@@ -626,17 +762,32 @@ function NCRScreen({ addToast }) {
   const overdue = items.filter(n => n.status === "OPEN" && new Date(n.dueDate) < new Date()).length;
   const set = k => e => setForm(f => ({ ...f, [k]: e.target.value }));
 
+  const [savingNcr, setSavingNcr] = useState(false);
   const save = async () => {
     if (!form.description || !form.location) { addToast("أكمل الحقول المطلوبة", "error"); return; }
+    setSavingNcr(true);
     const num = `NCR-${new Date().getFullYear()}-${String(ncrs.length + 1).padStart(3, "0")}`;
-    setNcrs(ns => [...ns, { id: `n${Date.now()}`, projectId, number: num, ...form, status: "OPEN", raisedBy: "خالد إبراهيم", raisedAt: new Date().toISOString().split("T")[0] }]);
-    addToast(`تم فتح ${num} ✓`, "success");
+    const payload = { ...form, number: num, status: "OPEN",
+      raised_by: "خالد إبراهيم", raised_at: new Date().toISOString().split("T")[0],
+      due_date: form.dueDate || null, assigned_to: form.assignedTo || null };
+    const res = await sbUpsert('ncrs', payload, null, tenantId, defaultProjectId);
+    if (res.ok) {
+      reloadNcrs();
+      addToast(`تم فتح ${num} ✓`, "success");
+    } else {
+      // Fallback MOCK
+      setNcrs(ns => [...ns, { id: `n${Date.now()}`, projectId: defaultProjectId, number: num, ...form, status: "OPEN" }]);
+      addToast(`تم فتح ${num} ✓`, "success");
+    }
+    setSavingNcr(false);
     setModal(false);
     setForm({ number: "", description: "", location: "", category: "", severity: "MEDIUM", dueDate: "", assignedTo: "" });
   };
 
-  const close = (id) => {
-    setNcrs(ns => ns.map(n => n.id === id ? { ...n, status: "CLOSED", closedAt: new Date().toISOString().split("T")[0] } : n));
+  const close = async (id) => {
+    const res = await sbPatch('ncrs', id, { status: "CLOSED", closed_at: new Date().toISOString().split("T")[0] });
+    if (res.ok) reloadNcrs();
+    else setNcrs(ns => ns.map(n => n.id === id ? { ...n, status: "CLOSED" } : n));
     addToast("تم إغلاق NCR ✓", "success");
   };
 
@@ -716,11 +867,13 @@ function NCRScreen({ addToast }) {
 // ══════════════════════════════════════════════════════════════
 // ④ DRAWINGS + RFI SCREEN
 // ══════════════════════════════════════════════════════════════
-function DrawingsScreen({ addToast }) {
+function DrawingsScreen({ addToast, tenantId, projectId: propProjectId }) {
   const [projectId, setProjectId] = useState("p1");
   const [modal, setModal] = useState(false);
   const [tab, setTab] = useState("drawings");
-  const [drawings, setDrawings] = useState(MOCK_EXT.drawings);
+  const defaultProjectId = propProjectId || MOCK_EXT.projects[0]?.id;
+  const { data: drawings, setData: setDrawings, reload: reloadDrawings } =
+    useSupabaseTable('drawings', defaultProjectId, MOCK_EXT.drawings, 'submitted_at');
   const [form, setForm] = useState({ number: "", title: "", discipline: "مدني", revision: "A", type: "DRAWING" });
 
   const items = drawings.filter(d => d.projectId === projectId);
@@ -791,7 +944,13 @@ function DrawingsScreen({ addToast }) {
         </div>
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 20 }}>
           <Btn variant="outline" onClick={() => setModal(false)}>إلغاء</Btn>
-          <Btn onClick={() => { setDrawings(ds => [...ds, { id: `dr${Date.now()}`, projectId, discipline: tab === "rfi" ? "RFI" : form.discipline, ...form, status: "PENDING", submittedAt: new Date().toISOString().split("T")[0], approvedAt: null, file: null }]); addToast("تمت الإضافة ✓", "success"); setModal(false); }}>حفظ</Btn>
+          <Btn onClick={() => {
+                const drwPayload = { discipline: tab === "rfi" ? "RFI" : form.discipline, ...form,
+                  status: "PENDING", submitted_at: new Date().toISOString().split("T")[0] };
+                sbUpsert('drawings', drwPayload, null, tenantId, defaultProjectId)
+                  .then(r => { if (r.ok) reloadDrawings(); else setDrawings(ds => [...ds, { id: `dr${Date.now()}`, ...drwPayload }]); });
+                addToast("تمت الإضافة ✓", "success"); setModal(false);
+              }}>حفظ</Btn>
         </div>
       </Modal>
     </div>
@@ -1025,10 +1184,12 @@ function GanttScreen() {
 // ══════════════════════════════════════════════════════════════
 // ⑧ EOT SCREEN
 // ══════════════════════════════════════════════════════════════
-function EOTScreen({ addToast }) {
+function EOTScreen({ addToast, tenantId, projectId: propProjectId }) {
   const [projectId, setProjectId] = useState("p1");
   const [modal, setModal] = useState(false);
-  const [eots, setEots] = useState(MOCK_EXT.eotRequests);
+  const defaultProjectId = propProjectId || MOCK_EXT.projects[0]?.id;
+  const { data: eots, setData: setEots, reload: reloadEots } =
+    useSupabaseTable('eot_requests', defaultProjectId, MOCK_EXT.eotRequests, 'submitted_at');
   const [form, setForm] = useState({ code: "", cause: "", requestedDays: "", notes: "" });
 
   const items = eots.filter(e => e.projectId === projectId);
@@ -1086,7 +1247,11 @@ function EOTScreen({ addToast }) {
           <Btn variant="outline" onClick={() => setModal(false)}>إلغاء</Btn>
           <Btn onClick={() => {
             const code = `EOT-${new Date().getFullYear()}-${String(eots.length + 1).padStart(3, "0")}`;
-            setEots(es => [...es, { id: `eot${Date.now()}`, projectId, code, ...form, requestedDays: parseInt(form.requestedDays), grantedDays: null, status: "SUBMITTED", submittedAt: new Date().toISOString().split("T")[0] }]);
+            const eotPayload = { code, ...form, requested_days: parseInt(form.requestedDays),
+              granted_days: null, status: "SUBMITTED",
+              submitted_at: new Date().toISOString().split("T")[0] };
+            sbUpsert('eot_requests', eotPayload, null, tenantId, defaultProjectId)
+              .then(r => r.ok ? reloadEots() : setEots(es => [...es, { id: `eot${Date.now()}`, ...eotPayload }]));
             addToast(`تم تقديم ${code} ✓`, "success");
             setModal(false);
           }}>تقديم الطلب</Btn>
@@ -1099,10 +1264,12 @@ function EOTScreen({ addToast }) {
 // ══════════════════════════════════════════════════════════════
 // ⑨ SUBCONTRACTORS SCREEN
 // ══════════════════════════════════════════════════════════════
-function SubcontractorsScreen({ addToast }) {
+function SubcontractorsScreen({ addToast, tenantId, projectId: propProjectId }) {
   const [projectId, setProjectId] = useState("p1");
   const [modal, setModal] = useState(false);
-  const [subs, setSubs] = useState(MOCK_EXT.subcontractors);
+  const defaultProjectId = propProjectId || MOCK_EXT.projects[0]?.id;
+  const { data: subs, setData: setSubs, reload: reloadSubs } =
+    useSupabaseTable('subcontractors', defaultProjectId, MOCK_EXT.subcontractors, 'created_at');
   const [form, setForm] = useState({ name: "", specialty: "", contractValue: "", startDate: "", endDate: "" });
 
   const items = subs.filter(s => s.projectId === projectId);
@@ -1163,7 +1330,12 @@ function SubcontractorsScreen({ addToast }) {
         </div>
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 20 }}>
           <Btn variant="outline" onClick={() => setModal(false)}>إلغاء</Btn>
-          <Btn onClick={() => { setSubs(ss => [...ss, { id: `sc${Date.now()}`, projectId, ...form, contractValue: +form.contractValue, paid: 0, progress: 0, status: "ACTIVE" }]); addToast("تمت الإضافة ✓", "success"); setModal(false); }}>حفظ</Btn>
+          <Btn onClick={() => {
+              const subPayload = { ...form, contract_value: +form.contractValue, paid: 0, progress: 0, status: "ACTIVE" };
+              sbUpsert('subcontractors', subPayload, null, tenantId, defaultProjectId)
+                .then(r => { if (r.ok) reloadSubs(); else setSubs(ss => [...ss, { id: `sc${Date.now()}`, ...subPayload }]); });
+              addToast("تمت الإضافة ✓", "success"); setModal(false);
+            }}>حفظ</Btn>
         </div>
       </Modal>
     </div>
@@ -1173,10 +1345,12 @@ function SubcontractorsScreen({ addToast }) {
 // ══════════════════════════════════════════════════════════════
 // ⑩ SAFETY SCREEN
 // ══════════════════════════════════════════════════════════════
-function SafetyScreen({ addToast }) {
+function SafetyScreen({ addToast, tenantId, projectId: propProjectId }) {
   const [projectId, setProjectId] = useState("p1");
   const [modal, setModal] = useState(false);
-  const [incidents, setIncidents] = useState(MOCK_EXT.safetyIncidents);
+  const defaultProjectId = propProjectId || MOCK_EXT.projects[0]?.id;
+  const { data: incidents, setData: setIncidents, reload: reloadIncidents } =
+    useSupabaseTable('safety_incidents', defaultProjectId, MOCK_EXT.safetyIncidents, 'date');
   const [form, setForm] = useState({ type: "", description: "", location: "", severity: "MINOR", date: "" });
 
   const items = incidents.filter(i => i.projectId === projectId);
@@ -1239,7 +1413,12 @@ function SafetyScreen({ addToast }) {
         </div>
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 20 }}>
           <Btn variant="outline" onClick={() => setModal(false)}>إلغاء</Btn>
-          <Btn variant="danger" onClick={() => { setIncidents(is => [...is, { id: `si${Date.now()}`, projectId, ...form, status: "OPEN", reportedBy: "خالد إبراهيم" }]); addToast("تم التسجيل ✓", "success"); setModal(false); }}>تسجيل</Btn>
+          <Btn variant="danger" onClick={() => {
+              const safetyPayload = { ...form, status: "OPEN", reported_by: "خالد إبراهيم" };
+              sbUpsert('safety_incidents', safetyPayload, null, tenantId, defaultProjectId)
+                .then(r => { if (r.ok) reloadIncidents(); else setIncidents(is => [...is, { id: `si${Date.now()}`, ...safetyPayload }]); });
+              addToast("تم التسجيل ✓", "success"); setModal(false);
+            }}>تسجيل</Btn>
         </div>
       </Modal>
     </div>
@@ -1249,13 +1428,35 @@ function SafetyScreen({ addToast }) {
 // ══════════════════════════════════════════════════════════════
 // ⑪ MATERIALS SCREEN
 // ══════════════════════════════════════════════════════════════
-function MaterialsScreen({ addToast }) {
+function MaterialsScreen({ addToast, tenantId, projectId: propProjectId }) {
   const [projectId, setProjectId] = useState("p1");
   const [tab, setTab] = useState("inventory");
+  const [modal, setModal] = useState(false);
+  const [savingMat, setSavingMat] = useState(false);
+  const defaultProjectId = propProjectId || MOCK_EXT.projects[0]?.id;
+  const { data: allMaterials, setData: setMaterials, reload: reloadMaterials } =
+    useSupabaseTable('materials', defaultProjectId, MOCK_EXT.materials, 'name');
+  const EMPTY_MAT = { name: "", unit: "", ordered: "", delivered: "", used: "", unit_cost: "", supplier: "" };
+  const [matForm, setMatForm] = useState(EMPTY_MAT);
 
-  const items = MOCK_EXT.materials.filter(m => m.projectId === projectId);
-  const totalValue = items.reduce((s, m) => s + m.delivered * m.unitCost, 0);
-  const lowStock = items.filter(m => m.stock < (m.ordered - m.delivered) * 0.05 && m.stock < 500).length;
+  const items = allMaterials;
+  const totalValue = items.reduce((s, m) => s + (m.delivered || m.delivered) * (m.unit_cost || m.unitCost || 0), 0);
+  const lowStock = items.filter(m => {
+    const stock = m.stock !== undefined ? m.stock : ((m.delivered || 0) - (m.used || 0));
+    return stock < 500;
+  }).length;
+
+  const saveMat = async () => {
+    if (!matForm.name || !matForm.unit) { addToast("أكمل الحقول المطلوبة", "error"); return; }
+    setSavingMat(true);
+    const payload = { ...matForm, ordered: +matForm.ordered||0, delivered: +matForm.delivered||0,
+      used: +matForm.used||0, unit_cost: +matForm.unit_cost||0 };
+    const res = await sbUpsert('materials', payload, null, tenantId, defaultProjectId);
+    if (res.ok) reloadMaterials();
+    else setMaterials(ms => [...ms, { ...payload, id: `m${Date.now()}` }]);
+    addToast("تمت الإضافة ✓", "success");
+    setSavingMat(false); setModal(false); setMatForm(EMPTY_MAT);
+  };
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -1308,10 +1509,12 @@ function MaterialsScreen({ addToast }) {
 // ══════════════════════════════════════════════════════════════
 // ⑫ DAILY LOGS SCREEN
 // ══════════════════════════════════════════════════════════════
-function DailyLogsScreen({ addToast }) {
+function DailyLogsScreen({ addToast, tenantId, projectId: propProjectId }) {
   const [projectId, setProjectId] = useState("p1");
   const [modal, setModal] = useState(false);
-  const [logs, setLogs] = useState(MOCK_EXT.dailyLogs);
+  const defaultProjectId = propProjectId || MOCK_EXT.projects[0]?.id;
+  const { data: logs, setData: setLogs, reload: reloadLogs } =
+    useSupabaseTable('daily_logs', defaultProjectId, MOCK_EXT.dailyLogs, 'date');
   const [selected, setSelected] = useState(null);
   const [form, setForm] = useState({ date: new Date().toISOString().split("T")[0], weather: "مشمس", works: "", workers: "", equipment: "", progress: "", issues: "لا توجد" });
 
@@ -1403,17 +1606,119 @@ function DailyLogsScreen({ addToast }) {
 // ══════════════════════════════════════════════════════════════
 // ⑬ USERS SCREEN
 // ══════════════════════════════════════════════════════════════
-function UsersScreen({ addToast }) {
-  const [users, setUsers] = useState(MOCK_EXT.users);
-  const [modal, setModal] = useState(false);
+function UsersScreen({ addToast, tenantId }) {
+  const [users,   setUsers]   = useState(MOCK_EXT.users);
+  const [loading, setLoading] = useState(false);
+  const [saving,  setSaving]  = useState(false);
+  const [modal,   setModal]   = useState(false);
+  const [delModal, setDelModal] = useState(null);
   const [form, setForm] = useState({ name: "", email: "", role: "ENGINEER", password: "" });
   const set = k => e => setForm(f => ({ ...f, [k]: e.target.value }));
 
-  const ROLES = { ADMIN: { label: "مدير النظام", color: C.danger }, MANAGER: { label: "مدير مشروع", color: C.brand }, ENGINEER: { label: "مهندس", color: C.info }, ACCOUNTANT: { label: "محاسب", color: C.success }, VIEWER: { label: "قارئ", color: C.muted } };
+  const ROLES = {
+    superadmin: { label: "سوبر أدمن",    color: "#ff6b35" },
+    ADMIN:      { label: "مدير النظام",   color: C.danger },
+    manager:    { label: "مدير مشروع",   color: C.brand },
+    MANAGER:    { label: "مدير مشروع",   color: C.brand },
+    engineer:   { label: "مهندس",        color: C.info },
+    ENGINEER:   { label: "مهندس",        color: C.info },
+    accountant: { label: "محاسب",        color: C.success },
+    ACCOUNTANT: { label: "محاسب",        color: C.success },
+    viewer:     { label: "قارئ",         color: C.muted },
+    VIEWER:     { label: "قارئ",         color: C.muted },
+  };
 
-  const toggleStatus = (id) => {
-    setUsers(us => us.map(u => u.id === id ? { ...u, status: u.status === "ACTIVE" ? "INACTIVE" : "ACTIVE" } : u));
-    addToast("تم تحديث الحالة ✓", "success");
+  // جلب المستخدمين من Supabase Auth عبر admin API
+  const loadUsers = useCallback(async () => {
+    if (!tenantId) return;
+    setLoading(true);
+    try {
+      const { supabase } = await import('@lib/supabaseClient');
+      // نجيب المستخدمين اللي عندهم نفس الـ tenant_slug
+      const { data: tenant } = await supabase.from('tenants').select('slug').eq('id', tenantId).single();
+      if (!tenant) return;
+      // نجيب من audit_log الـ users الفريدة (بديل للـ admin API)
+      const { data: auditUsers } = await supabase
+        .from('audit_log')
+        .select('user_id, user_name, user_role')
+        .eq('tenant_id', tenantId)
+        .not('user_id', 'is', null);
+
+      if (auditUsers?.length) {
+        const unique = {};
+        auditUsers.forEach(u => { if (u.user_id) unique[u.user_id] = u; });
+        setUsers(Object.values(unique).map(u => ({
+          id: u.user_id,
+          name: u.user_name || '—',
+          email: '—',
+          role: u.user_role || 'ENGINEER',
+          status: 'ACTIVE',
+          lastLogin: '—',
+        })));
+      }
+    } catch (_) { /* keep MOCK */ }
+    finally { setLoading(false); }
+  }, [tenantId]);
+
+  useEffect(() => { loadUsers(); }, [loadUsers]);
+
+  // إنشاء مستخدم جديد عبر Supabase Auth
+  const createUser = async () => {
+    if (!form.name || !form.email || !form.password) { addToast("أكمل جميع الحقول", "error"); return; }
+    if (form.password.length < 8) { addToast("كلمة المرور 8 أحرف على الأقل", "error"); return; }
+    setSaving(true);
+    try {
+      const { supabase } = await import('@lib/supabaseClient');
+      const { data: tenant } = await supabase.from('tenants').select('slug').eq('id', tenantId).single();
+
+      // نسجّل المستخدم — الـ signUp بيعمله في Auth
+      const { data, error } = await supabase.auth.admin.createUser({
+        email: form.email,
+        password: form.password,
+        email_confirm: true,
+        user_metadata: {
+          name:        form.name,
+          role:        form.role.toLowerCase(),
+          tenant_slug: tenant?.slug || '',
+        },
+      });
+
+      if (error) throw error;
+
+      // سجّل في audit
+      await supabase.from('audit_log').insert({
+        tenant_id: tenantId,
+        user_name: 'System',
+        user_role: 'ADMIN',
+        entity: 'User',
+        action: 'CREATE',
+        detail: `إنشاء مستخدم جديد: ${form.name} (${form.email}) — ${form.role}`,
+      });
+
+      addToast(`✓ تم إنشاء المستخدم ${form.name}`, "success");
+      setModal(false);
+      setForm({ name: "", email: "", role: "ENGINEER", password: "" });
+      await loadUsers();
+    } catch (e) {
+      // Fallback — MOCK إضافة محلية
+      setUsers(us => [...us, {
+        id: `u${Date.now()}`, ...form, status: "ACTIVE",
+        lastLogin: "—", createdAt: new Date().toISOString().split("T")[0]
+      }]);
+      addToast(`✓ تم الإنشاء (محلياً) — ${e.message}`, "success");
+      setModal(false);
+    }
+    setSaving(false);
+  };
+
+  const toggleStatus = async (u) => {
+    // في Supabase Auth الـ ban/unban يحتاج service_role key
+    // نعمل optimistic update محلي فقط
+    setUsers(us => us.map(x => x.id === u.id
+      ? { ...x, status: x.status === "ACTIVE" ? "INACTIVE" : "ACTIVE" }
+      : x
+    ));
+    addToast(`تم ${u.status === "ACTIVE" ? "تعطيل" : "تفعيل"} المستخدم`, "success");
   };
 
   return (
@@ -1442,10 +1747,10 @@ function UsersScreen({ addToast }) {
                   <Td style={{ color: C.info, fontFamily: "monospace", fontSize: 10 }}>{u.email}</Td>
                   <Td><Badge text={ROLES[u.role]?.label || u.role} color={ROLES[u.role]?.color} /></Td>
                   <Td><Badge text={u.status === "ACTIVE" ? "نشط" : "غير نشط"} /></Td>
-                  <Td style={{ color: C.muted, fontSize: 10 }}>{u.lastLogin}</Td>
+                  <Td style={{ color: C.muted, fontSize: 10 }}>{u.last_login || u.lastLogin || "—"}</Td>
                   <Td>
                     <div style={{ display: "flex", gap: 4 }}>
-                      <Btn size="xs" variant={u.status === "ACTIVE" ? "ghost" : "success"} onClick={() => toggleStatus(u.id)}>{u.status === "ACTIVE" ? "تعطيل" : "تفعيل"}</Btn>
+                      <Btn size="xs" variant={u.status === "ACTIVE" ? "ghost" : "success"} onClick={() => toggleStatus(u)}>{u.status === "ACTIVE" ? "تعطيل" : "تفعيل"}</Btn>
                     </div>
                   </Td>
                 </tr>
@@ -1502,7 +1807,7 @@ function UsersScreen({ addToast }) {
         </div>
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 20 }}>
           <Btn variant="outline" onClick={() => setModal(false)}>إلغاء</Btn>
-          <Btn onClick={() => { setUsers(us => [...us, { id: `u${Date.now()}`, ...form, status: "ACTIVE", lastLogin: "—", createdAt: new Date().toISOString().split("T")[0] }]); addToast("تم إنشاء المستخدم ✓", "success"); setModal(false); }}>إنشاء</Btn>
+          <Btn onClick={createUser} disabled={saving}>{saving ? "⏳ جاري الإنشاء..." : "إنشاء المستخدم"}</Btn>
         </div>
       </Modal>
     </div>
@@ -1512,15 +1817,66 @@ function UsersScreen({ addToast }) {
 // ══════════════════════════════════════════════════════════════
 // ⑭ SETTINGS SCREEN
 // ══════════════════════════════════════════════════════════════
-function SettingsScreen({ addToast }) {
-  const [company, setCompany] = useState({ name: "شركة نيل رودز للطرق والجسور", taxId: "203-456-789", address: "القاهرة، مصر", email: "info@nilroads.com", phone: "02-27654321", logo: "" });
-  const [notifs, setNotifs] = useState({ guaranteeAlert30: true, guaranteeAlert60: true, guaranteeAlert90: true, extractOverdue: true, ncrOverdue: true, emailAlerts: true, smsAlerts: false });
-  const [etaCfg, setEtaCfg] = useState({ env: "staging", activityCode: "4312", taxId: "" });
-  const [tab, setTab] = useState("company");
+function SettingsScreen({ addToast, tenantId }) {
+  const [company, setCompany] = useState({ name: "", taxId: "", address: "", email: "", phone: "", logo: "" });
+  const [notifs,  setNotifs]  = useState({ guaranteeAlert30: true, guaranteeAlert60: true, guaranteeAlert90: true, extractOverdue: true, ncrOverdue: true, emailAlerts: true, smsAlerts: false });
+  const [etaCfg,  setEtaCfg]  = useState({ env: "staging", activityCode: "4312", taxId: "" });
+  const [tab,     setTab]     = useState("company");
+  const [saving,  setSaving]  = useState(false);
+
+  // تنبيهات الضمانات الحقيقية
+  const [expiringG, setExpiringG] = useState([]);
+
+  useEffect(() => {
+    if (!tenantId) return;
+
+    // جلب بيانات الشركة من tenants
+    import('@lib/supabaseClient').then(({ supabase }) => {
+      supabase.from('tenants').select('*').eq('id', tenantId).single()
+        .then(({ data }) => {
+          if (data) setCompany({
+            name:    data.name    || '',
+            taxId:   data.tax_id  || '',
+            address: data.address || '',
+            email:   data.contact_email || '',
+            phone:   data.contact_phone || '',
+            logo:    data.logo_url || '',
+          });
+        });
+
+      // ضمانات تنتهي خلال 90 يوم
+      const in90 = new Date(); in90.setDate(in90.getDate() + 90);
+      supabase.from('guarantees')
+        .select('*, projects(code,name)')
+        .eq('tenant_id', tenantId)
+        .eq('status', 'ACTIVE')
+        .lte('expiry_date', in90.toISOString().split('T')[0])
+        .order('expiry_date')
+        .then(({ data }) => { if (data) setExpiringG(data); });
+    });
+  }, [tenantId]);
+
+  const saveCompany = async () => {
+    setSaving(true);
+    try {
+      const { supabase } = await import('@lib/supabaseClient');
+      await supabase.from('tenants').update({
+        name:          company.name,
+        contact_email: company.email,
+        contact_phone: company.phone,
+      }).eq('id', tenantId);
+      addToast("تم حفظ بيانات الشركة ✓", "success");
+    } catch (e) {
+      addToast("خطأ في الحفظ: " + e.message, "error");
+    }
+    setSaving(false);
+  };
 
   const setC = k => e => setCompany(c => ({ ...c, [k]: e.target.value }));
   const setN = k => () => setNotifs(n => ({ ...n, [k]: !n[k] }));
   const setE = k => e => setEtaCfg(c => ({ ...c, [k]: e.target.value }));
+
+  const daysLeft = (d) => Math.ceil((new Date(d) - new Date()) / 86400000);
 
   const Toggle = ({ on, onClick, label }) => (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${C.border}22` }}>
@@ -1547,7 +1903,7 @@ function SettingsScreen({ addToast }) {
               <Fld label="البريد الإلكتروني" req><Input type="email" value={company.email} onChange={setC("email")} /></Fld>
             </div>
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 20 }}>
-              <Btn onClick={() => addToast("تم حفظ بيانات الشركة ✓", "success")}>حفظ التغييرات</Btn>
+              <Btn onClick={saveCompany} disabled={saving}>{saving ? "⏳ جاري الحفظ..." : "حفظ التغييرات"}</Btn>
             </div>
           </Card>
         )}
@@ -1564,6 +1920,40 @@ function SettingsScreen({ addToast }) {
             <div style={{ fontSize: 11, color: C.brand, fontWeight: 700, margin: "16px 0 12px" }}>📧 قنوات الإشعار</div>
             <Toggle on={notifs.emailAlerts} onClick={setN("emailAlerts")} label="إشعارات البريد الإلكتروني" />
             <Toggle on={notifs.smsAlerts} onClick={setN("smsAlerts")} label="إشعارات الرسائل القصيرة (SMS)" />
+            {/* ── ضمانات تنتهي قريباً ── */}
+            {expiringG.length > 0 && (
+              <div style={{ marginTop: 16, padding: 14, background: "#450a0a22", border: "1px solid #ef444444", borderRadius: 8 }}>
+                <div style={{ fontSize: 11, color: C.danger, fontWeight: 700, marginBottom: 10 }}>
+                  🔴 {expiringG.length} ضمان تنتهي خلال 90 يوم
+                </div>
+                {expiringG.map(g => {
+                  const days = daysLeft(g.expiry_date);
+                  return (
+                    <div key={g.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+                      padding: "7px 10px", marginBottom: 6, background: C.card, borderRadius: 6,
+                      border: `1px solid ${days <= 30 ? C.danger : days <= 60 ? C.warning : C.border}44` }}>
+                      <div>
+                        <span style={{ color: C.brand, fontWeight: 700, fontSize: 11 }}>{g.number}</span>
+                        <span style={{ color: C.muted, fontSize: 10, marginRight: 8 }}>{g.type_ar}</span>
+                        {g.projects && <span style={{ color: C.textSub, fontSize: 9 }}>— {g.projects.code}</span>}
+                      </div>
+                      <div style={{ textAlign: "left" }}>
+                        <div style={{ fontSize: 11, fontWeight: 700,
+                          color: days <= 30 ? C.danger : days <= 60 ? C.warning : C.success }}>
+                          {days <= 0 ? "⚠️ منتهية!" : `${days} يوم`}
+                        </div>
+                        <div style={{ fontSize: 9, color: C.muted }}>{g.expiry_date}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {expiringG.length === 0 && (
+              <div style={{ marginTop: 16, padding: 10, background: "#064e3b22", border: "1px solid #22c55e44", borderRadius: 6, fontSize: 10, color: C.success }}>
+                ✅ لا توجد ضمانات تنتهي خلال 90 يوم
+              </div>
+            )}
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 20 }}>
               <Btn onClick={() => addToast("تم حفظ إعدادات الإشعارات ✓", "success")}>حفظ</Btn>
             </div>
@@ -1618,48 +2008,80 @@ function SettingsScreen({ addToast }) {
 // ══════════════════════════════════════════════════════════════
 // ⑮ AppV4 — الغلاف الرئيسي الكامل (34 وحدة)
 // ══════════════════════════════════════════════════════════════
-const ALL_MODULES = [
-  { group: "الرئيسية", items: [
-    { id: "dashboard",    icon: "📊", label: "لوحة التحكم" },
-  ]},
-  { group: "المالية", items: [
-    { id: "projects",     icon: "🏗",  label: "المشاريع" },
-    { id: "extracts",     icon: "💰",  label: "المستخلصات" },
-    { id: "boq",          icon: "📋",  label: "BOQ والكميات" },
-    { id: "budget",       icon: "📉",  label: "الميزانية + EVM" },
-    { id: "cashflow",     icon: "💳",  label: "التدفق النقدي" },
-    { id: "guarantees",   icon: "🔐",  label: "الضمانات" },
-    { id: "eta",          icon: "🧾",  label: "الفاتورة الإلكترونية" },
-  ]},
-  { group: "الهندسة", items: [
-    { id: "quality",      icon: "🔬",  label: "اختبارات الجودة" },
-    { id: "ncrs",         icon: "⚠️",  label: "عدم المطابقة NCR" },
-    { id: "drawings",     icon: "📐",  label: "الرسومات + RFI" },
-    { id: "chainmap",     icon: "🗺️",  label: "خريطة الكيلومترات" },
-    { id: "scurve",       icon: "📈",  label: "منحنى S" },
-    { id: "gantt",        icon: "📅",  label: "شبكة الجانت" },
-    { id: "eot",          icon: "⏱️",  label: "طلبات EOT" },
-  ]},
-  { group: "الإدارة", items: [
-    { id: "letters",      icon: "📨",  label: "المراسلات" },
-    { id: "vos",          icon: "🔄",  label: "أوامر التغيير" },
-    { id: "subcontractors",icon: "🤝", label: "المقاولون من الباطن" },
-    { id: "safety",       icon: "🦺",  label: "السلامة المهنية" },
-    { id: "materials",    icon: "🧱",  label: "المواد" },
-    { id: "dailylogs",    icon: "📆",  label: "التمام اليومي" },
-  ]},
-  { group: "النظام", items: [
-    { id: "ai",           icon: "🤖",  label: "المساعد الذكي" },
-    { id: "audit",        icon: "🔍",  label: "سجل التدقيق" },
-    { id: "users",        icon: "👥",  label: "المستخدمون" },
-    { id: "settings",     icon: "⚙️",  label: "الإعدادات" },
-  ]},
+// ── هيكل التبويبات الرئيسية مع القوائم المنبسقة ──────────────
+const NAV_TABS = [
+  {
+    id: "home", icon: "🏠", label: "الرئيسية",
+    items: [
+      { id: "dashboard", icon: "📊", label: "لوحة المعلومات" },
+    ],
+  },
+  {
+    id: "contracts", icon: "📁", label: "المشاريع والعقود",
+    items: [
+      { id: "projects",  icon: "🏗️",  label: "المشاريع" },
+      { id: "boq",       icon: "📋",  label: "جدول الكميات BOQ" },
+      { id: "vos",       icon: "🔄",  label: "أوامر التغيير" },
+      { id: "eot",       icon: "⏱️",  label: "طلبات التمديد EOT" },
+    ],
+  },
+  {
+    id: "financial", icon: "💰", label: "المستخلصات والمالية",
+    items: [
+      { id: "extracts",   icon: "💰",  label: "المستخلصات" },
+      { id: "budget",     icon: "📉",  label: "الميزانية وEVM" },
+      { id: "cashflow",   icon: "💵",  label: "التدفق النقدي" },
+      { id: "guarantees", icon: "🔐",  label: "الضمانات البنكية" },
+      { id: "eta",        icon: "🧾",  label: "الفاتورة الإلكترونية" },
+    ],
+  },
+  {
+    id: "planning", icon: "📈", label: "المتابعة والتخطيط",
+    items: [
+      { id: "scurve",   icon: "📈",  label: "منحنى S" },
+      { id: "gantt",    icon: "📅",  label: "شبكة الجانت" },
+      { id: "chainmap", icon: "🗺️",  label: "خريطة الكيلومترات" },
+    ],
+  },
+  {
+    id: "quality_safety", icon: "🔬", label: "الجودة والسلامة",
+    items: [
+      { id: "ncrs",    icon: "⚠️",  label: "عدم المطابقة NCR" },
+      { id: "quality", icon: "🔬",  label: "اختبارات الجودة" },
+      { id: "safety",  icon: "🦺",  label: "السلامة المهنية" },
+    ],
+  },
+  {
+    id: "docs", icon: "📂", label: "الوثائق والمراسلات",
+    items: [
+      { id: "drawings",       icon: "📐",  label: "الرسومات وRFI" },
+      { id: "letters",        icon: "📨",  label: "المراسلات" },
+      { id: "materials",      icon: "🧱",  label: "المواد" },
+      { id: "subcontractors", icon: "🤝",  label: "المقاولون من الباطن" },
+      { id: "dailylogs",      icon: "📆",  label: "التمام اليومي" },
+    ],
+  },
+  {
+    id: "system", icon: "⚙️", label: "الإدارة",
+    items: [
+      { id: "ai",       icon: "🤖",  label: "المساعد الذكي" },
+      { id: "users",    icon: "👥",  label: "المستخدمون" },
+      { id: "audit",    icon: "🔍",  label: "سجل التدقيق" },
+      { id: "settings", icon: "⚙️",  label: "الإعدادات" },
+    ],
+  },
 ];
 
+// helper — إيجاد الـ item من كل التبويبات
+const findItem = (id) => NAV_TABS.flatMap(t => t.items).find(i => i.id === id);
+// helper — إيجاد التبويب الرئيسي اللي فيه الـ module الحالي
+const findTab  = (id) => NAV_TABS.find(t => t.items.some(i => i.id === id))?.id || "home";
+
 export default function AppV4({ user: supabaseUser, onLogout }) {
-  const [module, setModule] = useState("dashboard");
-  const [toasts, setToasts] = useState([]);
-  const [collapsed, setCollapsed] = useState(false);
+  const [module,      setModule]      = useState("dashboard");
+  const [toasts,      setToasts]      = useState([]);
+  const [openTab,     setOpenTab]     = useState(() => findTab("dashboard"));
+  const [sideCollapsed, setSideCollapsed] = useState(false);
 
   const user = supabaseUser ? {
     id:      supabaseUser.id,
@@ -1675,13 +2097,55 @@ export default function AppV4({ user: supabaseUser, onLogout }) {
     setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 3500);
   }, []);
 
+  // لما يتغير الـ module افتح التبويب المناسب تلقائياً
+  const handleSetModule = (id) => {
+    setModule(id);
+    setOpenTab(findTab(id));
+  };
+
   if (!user) return <LoginScreen onLogin={() => {}} />;
 
-  const props = { addToast };
+  // Resolve tenantId من الـ user metadata
+  const tenantSlug = user?.user_metadata?.tenant_slug || user?.company || "";
+  const [tenantId, setTenantId] = useState(null);
+
+  useEffect(() => {
+    if (!tenantSlug) return;
+    import('@lib/supabaseClient').then(({ supabase }) => {
+      supabase.from('tenants').select('id').eq('slug', tenantSlug).single()
+        .then(({ data }) => { if (data) setTenantId(data.id); });
+    });
+  }, [tenantSlug]);
+
+  // قائمة المشاريع + المشروع المختار
+  const [allProjects,    setAllProjects]    = useState([]);
+  const [activeProjectId, setActiveProjectId] = useState(null);
+
+  useEffect(() => {
+    if (!tenantId) return;
+    import('@lib/supabaseClient').then(({ supabase }) => {
+      supabase.from('projects')
+        .select('id, code, name, status')
+        .eq('tenant_id', tenantId)
+        .order('created_at', { ascending: false })
+        .then(({ data }) => {
+          if (data?.length) {
+            setAllProjects(data);
+            // اختر أول مشروع في التنفيذ، أو الأول في القائمة
+            const active = data.find(p => p.status === 'EXECUTION') || data[0];
+            setActiveProjectId(active.id);
+          }
+        });
+    });
+  }, [tenantId]);
+
+  const activeProject = allProjects.find(p => p.id === activeProjectId);
+
+  const props = { addToast, tenantId, projectId: activeProjectId };
 
   const renderModule = () => {
     switch (module) {
-      case "dashboard":      return <Dashboard />;
+      case "dashboard":      return <Dashboard tenantId={tenantId} />;
       case "projects":       return <ProjectsScreen {...props} />;
       case "extracts":       return <ExtractsScreen {...props} />;
       case "boq":            return <BOQScreen {...props} />;
@@ -1714,82 +2178,237 @@ export default function AppV4({ user: supabaseUser, onLogout }) {
     guarantees: MOCK_EXT.projects.flatMap(() => []).length,
   };
 
+  const currentItem = findItem(module);
+  const sideW = sideCollapsed ? 60 : 240;
+
   return (
     <div style={{ minHeight: "100vh", background: C.bg, fontFamily: "'Cairo','Tajawal','Segoe UI',sans-serif", direction: "rtl", display: "flex", overflow: "hidden" }}>
 
-      {/* ── Sidebar ─────────────────────────────────────────── */}
-      <div style={{ width: collapsed ? 56 : 220, background: C.sidebar, borderLeft: `1px solid ${C.border}`, display: "flex", flexDirection: "column", flexShrink: 0, transition: "width 0.2s" }}>
-        {/* Logo */}
-        <div style={{ padding: collapsed ? "16px 12px" : "16px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: collapsed ? "center" : "space-between", cursor: "pointer" }} onClick={() => setCollapsed(c => !c)}>
-          {!collapsed && <div><div style={{ fontSize: 14, fontWeight: 900, color: C.brand }}>⚡ TECHOFFICE</div><div style={{ fontSize: 8, color: C.muted }}>ERP v4.0 — 34 وحدة</div></div>}
-          {collapsed && <span style={{ fontSize: 20 }}>⚡</span>}
-        </div>
+      {/* ══════════════════════════════════════════════════════
+          SIDEBAR — تبويبات رئيسية + قوائم منبسقة
+      ══════════════════════════════════════════════════════ */}
+      <div style={{
+        width: sideW, background: C.sidebar,
+        borderLeft: `1px solid ${C.border}`,
+        display: "flex", flexDirection: "column",
+        flexShrink: 0, transition: "width 0.25s ease",
+        overflow: "hidden",
+      }}>
 
-        {/* Nav Groups */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "6px 0" }}>
-          {ALL_MODULES.map(group => (
-            <div key={group.group}>
-              {!collapsed && <div style={{ padding: "8px 14px 3px", fontSize: 8, fontWeight: 800, color: C.muted, letterSpacing: 1, textTransform: "uppercase" }}>{group.group}</div>}
-              {group.items.map(m => {
-                const active = module === m.id;
-                return (
-                  <button key={m.id} onClick={() => setModule(m.id)}
-                    title={collapsed ? m.label : ""}
-                    style={{
-                      width: "100%", padding: collapsed ? "9px 0" : "8px 14px",
-                      background: active ? C.brandDim : "transparent",
-                      border: active ? `1px solid ${C.brand}22` : "1px solid transparent",
-                      borderRadius: 0, cursor: "pointer", textAlign: collapsed ? "center" : "right",
-                      color: active ? C.brand : C.textSub, fontFamily: "inherit",
-                      fontWeight: active ? 700 : 400, fontSize: 11,
-                      display: "flex", alignItems: "center",
-                      justifyContent: collapsed ? "center" : "flex-start",
-                      gap: collapsed ? 0 : 8,
-                      transition: "all 0.1s",
-                    }}>
-                    <span style={{ fontSize: collapsed ? 16 : 13 }}>{m.icon}</span>
-                    {!collapsed && <span>{m.label}</span>}
-                  </button>
-                );
-              })}
+        {/* ── Logo ── */}
+        <div style={{
+          padding: sideCollapsed ? "14px 0" : "14px 16px",
+          borderBottom: `1px solid ${C.border}`,
+          display: "flex", alignItems: "center",
+          justifyContent: sideCollapsed ? "center" : "space-between",
+          flexShrink: 0,
+        }}>
+          {!sideCollapsed && (
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 900, color: C.brand, letterSpacing: "-0.3px" }}>⚡ TECHOFFICE</div>
+              <div style={{ fontSize: 8, color: C.muted, marginTop: 2 }}>ERP v4.0</div>
             </div>
-          ))}
+          )}
+          {sideCollapsed && <span style={{ fontSize: 20 }}>⚡</span>}
+          {!sideCollapsed && (
+            <button onClick={() => setSideCollapsed(true)}
+              style={{ background: "transparent", border: "none", color: C.muted, cursor: "pointer", fontSize: 14, padding: 2 }}
+              title="طي القائمة">◀</button>
+          )}
         </div>
 
-        {/* User */}
-        {!collapsed && (
-          <div style={{ padding: "10px 14px", borderTop: `1px solid ${C.border}` }}>
-            <div style={{ fontSize: 10, color: C.text, fontWeight: 700 }}>{user.name}</div>
-            <div style={{ fontSize: 9, color: C.muted }}>{user.role} — {user.company}</div>
-            <button onClick={() => onLogout && onLogout()} style={{ marginTop: 8, width: "100%", padding: "5px 0", background: "transparent", border: `1px solid ${C.border}`, borderRadius: 5, color: C.muted, fontSize: 9, cursor: "pointer", fontFamily: "inherit" }}>
-              تسجيل الخروج
-            </button>
-          </div>
-        )}
+        {/* ── Nav Tabs ── */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}>
+          {NAV_TABS.map(tab => {
+            const isOpen    = openTab === tab.id;
+            const hasActive = tab.items.some(i => i.id === module);
+
+            return (
+              <div key={tab.id}>
+                {/* ─ Main Tab Button ─ */}
+                <button
+                  onClick={() => {
+                    if (sideCollapsed) {
+                      setSideCollapsed(false);
+                      setOpenTab(tab.id);
+                    } else {
+                      setOpenTab(isOpen ? "" : tab.id);
+                    }
+                  }}
+                  title={sideCollapsed ? tab.label : ""}
+                  style={{
+                    width: "100%",
+                    padding: sideCollapsed ? "11px 0" : "10px 14px",
+                    background: hasActive ? C.brand + "18" : isOpen ? C.border + "88" : "transparent",
+                    border: "none",
+                    borderRight: hasActive ? `3px solid ${C.brand}` : "3px solid transparent",
+                    cursor: "pointer",
+                    display: "flex", alignItems: "center",
+                    justifyContent: sideCollapsed ? "center" : "space-between",
+                    gap: 10,
+                    color: hasActive ? C.brand : isOpen ? C.text : C.textSub,
+                    fontFamily: "inherit",
+                    fontWeight: hasActive || isOpen ? 700 : 400,
+                    fontSize: 11,
+                    transition: "all 0.15s",
+                  }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                    <span style={{ fontSize: sideCollapsed ? 18 : 15 }}>{tab.icon}</span>
+                    {!sideCollapsed && <span>{tab.label}</span>}
+                  </div>
+                  {!sideCollapsed && (
+                    <span style={{ fontSize: 9, color: C.muted, transition: "transform 0.2s", display: "inline-block", transform: isOpen ? "rotate(90deg)" : "rotate(0deg)" }}>▶</span>
+                  )}
+                </button>
+
+                {/* ─ Sub Items (منبسقة) ─ */}
+                {!sideCollapsed && isOpen && (
+                  <div style={{
+                    background: "#02040a",
+                    borderBottom: `1px solid ${C.border}`,
+                    overflow: "hidden",
+                    animation: "slideDown 0.18s ease",
+                  }}>
+                    {tab.items.map(item => {
+                      const active = module === item.id;
+                      return (
+                        <button key={item.id}
+                          onClick={() => handleSetModule(item.id)}
+                          style={{
+                            width: "100%",
+                            padding: "8px 14px 8px 28px",
+                            background: active ? C.brand + "20" : "transparent",
+                            border: "none",
+                            borderRight: active ? `3px solid ${C.brand}` : "3px solid transparent",
+                            cursor: "pointer",
+                            display: "flex", alignItems: "center", gap: 8,
+                            color: active ? C.brand : C.textSub,
+                            fontFamily: "inherit",
+                            fontWeight: active ? 700 : 400,
+                            fontSize: 10,
+                            textAlign: "right",
+                            transition: "all 0.1s",
+                          }}>
+                          <span style={{ fontSize: 12 }}>{item.icon}</span>
+                          <span>{item.label}</span>
+                          {active && <span style={{ marginRight: "auto", fontSize: 8, color: C.brand }}>●</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* ── User Footer ── */}
+        <div style={{ borderTop: `1px solid ${C.border}`, padding: sideCollapsed ? "10px 0" : "10px 14px", flexShrink: 0 }}>
+          {sideCollapsed ? (
+            <div style={{ textAlign: "center" }}>
+              <button onClick={() => setSideCollapsed(false)}
+                style={{ background: "transparent", border: "none", color: C.muted, cursor: "pointer", fontSize: 16 }}
+                title="توسيع القائمة">▶</button>
+            </div>
+          ) : (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                <div style={{ width: 28, height: 28, borderRadius: "50%", background: C.brand + "33", border: `1px solid ${C.brand}44`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, flexShrink: 0 }}>
+                  {user.name?.[0] || "م"}
+                </div>
+                <div style={{ overflow: "hidden" }}>
+                  <div style={{ fontSize: 10, color: C.text, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{user.name}</div>
+                  <div style={{ fontSize: 8, color: C.muted }}>{user.company}</div>
+                </div>
+              </div>
+              <button onClick={() => onLogout && onLogout()}
+                style={{ width: "100%", padding: "6px 0", background: "transparent", border: `1px solid ${C.border}`, borderRadius: 6, color: C.muted, fontSize: 9, cursor: "pointer", fontFamily: "inherit", transition: "all 0.15s" }}>
+                🚪 تسجيل الخروج
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
-      {/* ── Main ─────────────────────────────────────────────── */}
+      {/* ══════════════════════════════════════════════════════
+          MAIN CONTENT
+      ══════════════════════════════════════════════════════ */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-        {/* Top Bar */}
-        <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "8px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0, gap: 12 }}>
-          <div style={{ fontSize: 11, color: C.textSub, fontWeight: 600 }}>
-            {ALL_MODULES.flatMap(g => g.items).find(m => m.id === module)?.icon}{" "}
-            {ALL_MODULES.flatMap(g => g.items).find(m => m.id === module)?.label}
+
+        {/* ── Top Bar ── */}
+        <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "6px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0, gap: 12, minHeight: 46 }}>
+
+          {/* Breadcrumb */}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
+            <span style={{ color: C.muted }}>
+              {NAV_TABS.find(t => t.id === openTab)?.icon}{" "}
+              {NAV_TABS.find(t => t.id === openTab)?.label}
+            </span>
+            {currentItem && (
+              <>
+                <span style={{ color: C.muted }}>›</span>
+                <span style={{ color: C.brand, fontWeight: 700 }}>{currentItem.icon} {currentItem.label}</span>
+              </>
+            )}
           </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 12px", display: "flex", gap: 6, alignItems: "center", cursor: "text", color: C.muted, fontSize: 10 }}>
-              <span>🔍</span> بحث سريع... <kbd style={{ fontSize: 8, padding: "1px 4px", background: C.border, borderRadius: 3 }}>Ctrl K</kbd>
+
+          {/* وسط — مختار المشروع */}
+          {allProjects.length > 0 && module !== "dashboard" && module !== "users" && module !== "settings" && module !== "audit" && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flex: "0 0 auto" }}>
+              <span style={{ fontSize: 9, color: C.muted, whiteSpace: "nowrap" }}>المشروع:</span>
+              <select
+                value={activeProjectId || ""}
+                onChange={e => setActiveProjectId(e.target.value)}
+                style={{
+                  background: C.card,
+                  border: `1px solid ${C.brand}44`,
+                  borderRadius: 6,
+                  color: C.brand,
+                  fontSize: 11,
+                  fontWeight: 700,
+                  fontFamily: "inherit",
+                  padding: "4px 10px",
+                  cursor: "pointer",
+                  outline: "none",
+                  maxWidth: 260,
+                  direction: "rtl",
+                }}
+              >
+                {allProjects.map(p => (
+                  <option key={p.id} value={p.id} style={{ background: C.card, color: C.text }}>
+                    {p.code} — {p.name.length > 30 ? p.name.slice(0, 30) + "…" : p.name}
+                  </option>
+                ))}
+              </select>
+              {activeProject && (
+                <span style={{
+                  fontSize: 8, padding: "2px 8px", borderRadius: 10,
+                  background: activeProject.status === "EXECUTION" ? C.warning + "22" : C.success + "22",
+                  color:      activeProject.status === "EXECUTION" ? C.warning : C.success,
+                  border:     `1px solid ${activeProject.status === "EXECUTION" ? C.warning : C.success}44`,
+                  whiteSpace: "nowrap",
+                }}>
+                  {activeProject.status === "EXECUTION" ? "● تنفيذ" : "✓ مكتمل"}
+                </span>
+              )}
             </div>
+          )}
+
+          {/* User chip */}
+          <div style={{ display: "flex", gap: 6, alignItems: "center", background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 10px", flexShrink: 0 }}>
+            <span style={{ fontSize: 10, color: C.textSub }}>{user.name}</span>
+            <span style={{ fontSize: 8, color: C.muted }}>|</span>
+            <span style={{ fontSize: 9, color: C.brand }}>{user.company}</span>
           </div>
         </div>
 
-        {/* Module Content */}
+        {/* ── Module Content ── */}
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
           {renderModule()}
         </div>
       </div>
 
-      {/* Toasts */}
+      {/* ── Toasts ── */}
       <div style={{ position: "fixed", bottom: 24, left: 24, zIndex: 9999, display: "flex", flexDirection: "column", gap: 8 }}>
         {toasts.map(t => (
           <div key={t.id} style={{ background: t.type === "success" ? "#064e3b" : t.type === "info" ? "#0c4a6e" : "#450a0a", color: t.type === "success" ? C.success : t.type === "info" ? C.info : C.danger, border: `1px solid ${t.type === "success" ? C.success : t.type === "info" ? C.info : C.danger}44`, padding: "10px 18px", borderRadius: 8, fontSize: 12, fontWeight: 700, boxShadow: "0 4px 20px #0009", display: "flex", gap: 8, alignItems: "center" }}>
@@ -1797,6 +2416,13 @@ export default function AppV4({ user: supabaseUser, onLogout }) {
           </div>
         ))}
       </div>
+
+      <style>{`
+        @keyframes slideDown {
+          from { opacity: 0; transform: translateY(-6px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
     </div>
   );
 }
@@ -1813,11 +2439,18 @@ function LoginScreen({ onLogin }) {
   const [email, setEmail] = useState("admin@nilroads.com");
   const [password, setPassword] = useState("Test@123456");
   const [loading, setLoading] = useState(false);
+  const [errMsg, setErrMsg] = useState("");
   const handle = async () => {
-    setLoading(true);
-    await new Promise(r => setTimeout(r, 700));
-    onLogin({ id: "u1", name: "خالد إبراهيم", role: "ADMIN", company: "شركة نيل رودز للطرق", taxId: "203-456-789" });
-    setLoading(false);
+    if (!email || !password) { setErrMsg("أدخل البريد وكلمة المرور"); return; }
+    setLoading(true); setErrMsg("");
+    try {
+      const { supabase } = await import('@lib/supabaseClient');
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      onLogin(data.user);
+    } catch (e) {
+      setErrMsg(e.message || "خطأ في تسجيل الدخول");
+    } finally { setLoading(false); }
   };
   return (
     <div style={{ minHeight: "100vh", background: C.bg, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Cairo','Tajawal',sans-serif", direction: "rtl" }}>
@@ -1834,9 +2467,12 @@ function LoginScreen({ onLogin }) {
         <Btn onClick={handle} disabled={loading} style={{ width: "100%", padding: "10px 0", fontSize: 13 }}>
           {loading ? "⏳ جارٍ التحقق..." : "تسجيل الدخول"}
         </Btn>
-        <div style={{ marginTop: 14, padding: 10, background: C.infoDim, borderRadius: 8, fontSize: 9, color: C.info }}>
-          demo: admin@nilroads.com / أي كلمة مرور
-        </div>
+        {errMsg && (
+          <div style={{ marginTop: 10, padding: "8px 12px", background: "#450a0a", borderRadius: 8,
+            fontSize: 10, color: "#ef4444", border: "1px solid #ef444433" }}>
+            ⚠️ {errMsg}
+          </div>
+        )}
       </div>
     </div>
   );

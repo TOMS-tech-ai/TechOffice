@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import React, { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import {
   AreaChart, Area, LineChart, Line, BarChart, Bar, ComposedChart,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -190,6 +190,80 @@ function calcEgyptianExtract({
     advanceRemainingAfter: r2(Math.max(0, advanceRemainingBefore - advanceRecoveryActual)),
     warnings,
   };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SUPABASE UTILITIES — Hook مشترك لكل الصفحات
+// ═══════════════════════════════════════════════════════════════
+
+// جلب بيانات جدول مرتبط بمشروع مع fallback للـ MOCK
+function useSupabaseTable(table, projectId, mockData, orderCol = 'created_at') {
+  const [data, setData] = useState(mockData || []);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!projectId) { setData(mockData || []); return; }
+    setBusy(true);
+    try {
+      const { supabase } = await import('@lib/supabaseClient');
+      const { data: rows, error } = await supabase
+        .from(table).select('*')
+        .eq('project_id', projectId)
+        .order(orderCol, { ascending: false });
+      if (!error && rows) setData(rows.length ? rows : (mockData || []));
+    } catch (_) { setData(mockData || []); }
+    finally { setBusy(false); }
+  }, [table, projectId]); // ← لما projectId يتغير يعيد الجلب تلقائياً
+
+  useEffect(() => { load(); }, [load]);
+  return { data, setData, busy, reload: load };
+}
+
+// حفظ (إنشاء أو تعديل) في Supabase مع MOCK fallback
+async function sbUpsert(table, payload, editId, tenantId, projectId) {
+  try {
+    const { supabase } = await import('@lib/supabaseClient');
+    if (editId) {
+      const { data, error } = await supabase
+        .from(table).update(payload).eq('id', editId).select().single();
+      if (error) throw error;
+      return { ok: true, data };
+    } else {
+      const { data, error } = await supabase
+        .from(table)
+        .insert({ ...payload, tenant_id: tenantId, project_id: projectId })
+        .select().single();
+      if (error) throw error;
+      return { ok: true, data };
+    }
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+// حذف من Supabase
+async function sbRemove(table, id) {
+  try {
+    const { supabase } = await import('@lib/supabaseClient');
+    const { error } = await supabase.from(table).delete().eq('id', id);
+    if (error) throw error;
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+// تحديث حالة فقط
+async function sbPatch(table, id, patch) {
+  try {
+    const { supabase } = await import('@lib/supabaseClient');
+    const { data, error } = await supabase
+      .from(table).update(patch).eq('id', id).select().single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -505,31 +579,103 @@ function Dashboard() {
 // ══════════════════════════════════════════════════════════════
 // PROJECTS — Phase 4: Full CRUD ✨
 // ══════════════════════════════════════════════════════════════
-function ProjectsScreen({ addToast }) {
-  const [projects, setProjects] = useState(MOCK.projects);
-  const [modal, setModal] = useState(false);
-  const [editing, setEditing] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const EMPTY = { code: "", name: "", client: "", consultant: "", contractValue: "", status: "EXECUTION", startDate: "", contractEnd: "", pm: "", zone: "", length: "", chainageFrom: "", chainageTo: "", retentionPercent: 5, retentionCapPercent: 10, advancePercent: 10, advanceRecoveryPercent: 4, vatPercent: 14 };
+function ProjectsScreen({ addToast, user, tenantId }) {
+  const [projects, setProjects] = useState([]);
+  const [modal,    setModal]    = useState(false);
+  const [editing,  setEditing]  = useState(null);
+  const [loading,  setLoading]  = useState(false);
+  const [fetching, setFetching] = useState(true);
+
+  const EMPTY = { code: "", name: "", client: "", consultant: "", contract_value: "", status: "EXECUTION", start_date: "", contract_end: "", pm: "", zone: "", length_km: "", chainage_from: "", chainage_to: "", retention_pct: 5, retention_cap_pct: 10, advance_pct: 10, advance_recovery_pct: 4, vat_pct: 14 };
   const [form, setForm] = useState(EMPTY);
 
+  // ── جلب المشاريع من Supabase ────────────────────────────────
+  const loadProjects = async () => {
+    if (!tenantId) return;
+    setFetching(true);
+    try {
+      const { data, error } = await import('@lib/supabaseClient')
+        .then(m => m.supabase.from('projects').select('*')
+          .eq('tenant_id', tenantId)
+          .order('created_at', { ascending: false }));
+      if (error) throw error;
+      setProjects(data || []);
+    } catch (e) {
+      addToast('خطأ في تحميل المشاريع: ' + e.message, 'error');
+      // Fallback للـ MOCK في حالة عدم الاتصال
+      setProjects(MOCK.projects);
+    } finally {
+      setFetching(false);
+    }
+  };
+
+  useEffect(() => { loadProjects(); }, [tenantId]);
+
   const openCreate = () => { setForm(EMPTY); setEditing(null); setModal(true); };
-  const openEdit = (p) => { setForm({ ...p, contractValue: p.contractValue, length: p.length || "", chainageFrom: p.chainageFrom || "", chainageTo: p.chainageTo || "" }); setEditing(p.id); setModal(true); };
+  const openEdit   = (p) => {
+    setForm({
+      code: p.code, name: p.name, client: p.client || '', consultant: p.consultant || '',
+      contract_value: p.contract_value, status: p.status, start_date: p.start_date || '',
+      contract_end: p.contract_end || '', pm: p.pm || '', zone: p.zone || '',
+      length_km: p.length_km || '', chainage_from: p.chainage_from || '', chainage_to: p.chainage_to || '',
+      retention_pct: p.retention_pct || 5, retention_cap_pct: p.retention_cap_pct || 10,
+      advance_pct: p.advance_pct || 10, advance_recovery_pct: p.advance_recovery_pct || 4,
+      vat_pct: p.vat_pct || 14,
+    });
+    setEditing(p.id);
+    setModal(true);
+  };
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
 
   const save = async () => {
-    if (!form.code || !form.name || !form.client || !form.contractValue) { addToast("أكمل الحقول المطلوبة", "error"); return; }
-    setLoading(true);
-    // ── في الإنتاج: await api.projects.create(form) أو update ──
-    await new Promise(r => setTimeout(r, 600));
-    if (editing) {
-      setProjects(ps => ps.map(p => p.id === editing ? { ...p, ...form, contractValue: +form.contractValue, length: +form.length || 0 } : p));
-      addToast("تم تحديث المشروع ✓", "success");
-    } else {
-      setProjects(ps => [...ps, { ...form, id: `p${Date.now()}`, contractValue: +form.contractValue, paid: 0, progress: 0, plannedProgress: 0, length: +form.length || 0, eotDays: 0, totalRetained: 0, advanceRemaining: +form.contractValue * +form.advancePercent / 100 }]);
-      addToast("تم إنشاء المشروع ✓", "success");
+    if (!form.code || !form.name || !form.client || !form.contract_value) {
+      addToast("أكمل الحقول المطلوبة", "error"); return;
     }
-    setLoading(false); setModal(false);
+    setLoading(true);
+    try {
+      const { supabase } = await import('@lib/supabaseClient');
+      const payload = {
+        ...form,
+        contract_value:      +form.contract_value,
+        length_km:           +form.length_km || null,
+        chainage_from:       form.chainage_from !== '' ? +form.chainage_from : null,
+        chainage_to:         form.chainage_to  !== '' ? +form.chainage_to  : null,
+        retention_pct:       +form.retention_pct,
+        retention_cap_pct:   +form.retention_cap_pct,
+        advance_pct:         +form.advance_pct,
+        advance_recovery_pct:+form.advance_recovery_pct,
+        vat_pct:             +form.vat_pct,
+        tenant_id:           tenantId,
+      };
+      if (editing) {
+        const { error } = await supabase.from('projects').update(payload).eq('id', editing);
+        if (error) throw error;
+        addToast("تم تحديث المشروع ✓", "success");
+      } else {
+        const { error } = await supabase.from('projects').insert(payload);
+        if (error) throw error;
+        addToast("تم إنشاء المشروع ✓", "success");
+      }
+      setModal(false);
+      await loadProjects();
+    } catch (e) {
+      addToast("خطأ: " + e.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const deleteProject = async (id, name) => {
+    if (!confirm(`هل تريد حذف مشروع "${name}"؟ سيتم حذف كل البيانات المرتبطة به.`)) return;
+    try {
+      const { supabase } = await import('@lib/supabaseClient');
+      const { error } = await supabase.from('projects').delete().eq('id', id);
+      if (error) throw error;
+      addToast("تم الحذف ✓", "success");
+      await loadProjects();
+    } catch (e) {
+      addToast("خطأ في الحذف: " + e.message, "error");
+    }
   };
 
   const statusMap = { PLANNING: "تخطيط", TENDER: "عطاء", EXECUTION: "تنفيذ", SUSPENDED: "موقوف", COMPLETED: "مكتمل", CANCELLED: "ملغي" };
@@ -538,12 +684,16 @@ function ProjectsScreen({ addToast }) {
     <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
       <SectionHdr sub="إدارة جميع عقود المشاريع" action={<Btn onClick={openCreate}>+ مشروع جديد</Btn>}>🏗 المشاريع</SectionHdr>
       <div style={{ flex: 1, overflowY: "auto", padding: 20, display: "flex", flexDirection: "column", gap: 14 }}>
+        {fetching ? (
+          <div style={{ textAlign: "center", padding: 40, color: "#6e7a92" }}>⏳ جاري التحميل...</div>
+        ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
-          <Stat label="إجمالي العقود" value={`${fmt(projects.reduce((s, p) => s + p.contractValue, 0) / 1e6, 1)} م`} icon="💼" color={C.brand} />
+          <Stat label="إجمالي العقود" value={`${fmt(projects.reduce((s, p) => s + (p.contract_value || p.contractValue || 0), 0) / 1e6, 1)} م`} icon="💼" color={C.brand} />
           <Stat label="مشاريع نشطة" value={projects.filter(p => p.status === "EXECUTION").length} icon="⚙️" color={C.warning} />
           <Stat label="مكتملة" value={projects.filter(p => p.status === "COMPLETED").length} icon="✅" color={C.success} />
-          <Stat label="إجمالي كيلومترات" value={`${projects.reduce((s, p) => s + (p.length || 0), 0).toFixed(1)} كم`} icon="🛣" color={C.info} />
+          <Stat label="إجمالي كيلومترات" value={`${projects.reduce((s, p) => s + (p.length_km || p.length || 0), 0).toFixed(1)} كم`} icon="🛣" color={C.info} />
         </div>
+        )}
         <Card style={{ padding: 0 }}>
           <TblWrap>
             <thead><tr><Th>الكود</Th><Th>اسم المشروع</Th><Th>الجهة المالكة</Th><Th>قيمة العقد</Th><Th>المحصّل</Th><Th>التقدم</Th><Th>الحالة</Th><Th>تاريخ التسليم</Th><Th>الإجراءات</Th></tr></thead>
@@ -556,20 +706,21 @@ function ProjectsScreen({ addToast }) {
                     <Td><span style={{ color: C.brand, fontWeight: 700 }}>{p.code}</span></Td>
                     <Td><div style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div></Td>
                     <Td><span style={{ color: C.textSub, fontSize: 10 }}>{p.client}</span></Td>
-                    <Td style={{ color: C.text, fontWeight: 600 }}>{fmt(p.contractValue)} ج.م</Td>
+                    <Td style={{ color: C.text, fontWeight: 600 }}>{fmt(p.contract_value || p.contractValue)} ج.م</Td>
                     <Td>
                       <div style={{ width: 80 }}><ProgressBar value={paidPct} color={C.success} height={5} /></div>
                       <span style={{ fontSize: 9, color: C.success }}>{paidPct}%</span>
                     </Td>
                     <Td>
-                      <div style={{ width: 80 }}><ProgressBar value={p.progress} color={behind > 5 ? C.danger : behind > 0 ? C.warning : C.brand} height={5} /></div>
-                      <span style={{ fontSize: 9, color: behind > 5 ? C.danger : C.brand }}>{p.progress}%</span>
+                      <div style={{ width: 80 }}><ProgressBar value={p.progress} color={(p.planned_progress||p.plannedProgress||0) - p.progress > 5 ? C.danger : C.brand} height={5} /></div>
+                      <span style={{ fontSize: 9, color: C.brand }}>{p.progress}%</span>
                     </Td>
                     <Td><Badge text={statusMap[p.status] || p.status} /></Td>
-                    <Td style={{ color: C.muted, fontSize: 10 }}>{fmtDate(p.contractEnd)}</Td>
+                    <Td style={{ color: C.muted, fontSize: 10 }}>{fmtDate(p.contract_end || p.contractEnd)}</Td>
                     <Td>
                       <div style={{ display: "flex", gap: 4 }}>
                         <Btn variant="outline" size="xs" onClick={() => openEdit(p)}>✏ تعديل</Btn>
+                        <Btn variant="danger" size="xs" onClick={() => deleteProject(p.id, p.name)}>🗑</Btn>
                       </div>
                     </Td>
                   </tr>
@@ -622,16 +773,59 @@ function ProjectsScreen({ addToast }) {
 // ══════════════════════════════════════════════════════════════
 // EXTRACTS — Phase 4: Egyptian Formula + Full CRUD ✨
 // ══════════════════════════════════════════════════════════════
-function ExtractsScreen({ addToast }) {
-  const [projectId, setProjectId] = useState("p1");
-  const [extracts, setExtracts] = useState(MOCK.extracts);
-  const [modal, setModal] = useState(false);
-  const [calcModal, setCalcModal] = useState(false);
-  const [approveModal, setApproveModal] = useState(null);
-  const [loading, setLoading] = useState(false);
+function ExtractsScreen({ addToast, tenantId, projectId: propProjectId }) {
+  const defaultProjectId = propProjectId || MOCK.projects[0]?.id;
+  const { data: extracts, setData: setExtracts, busy: loadingExtracts, reload: reloadExtracts } =
+    useSupabaseTable('extracts', defaultProjectId, MOCK.extracts, 'submitted_at');
 
-  const proj = MOCK.projects.find(p => p.id === projectId);
-  const items = extracts.filter(e => e.projectId === projectId);
+  // جلب بيانات المشروع الحقيقية من Supabase
+  const [proj, setProj] = useState(MOCK.projects[0]);
+  useEffect(() => {
+    if (!defaultProjectId) return;
+    import('@lib/supabaseClient').then(({ supabase }) => {
+      supabase.from('projects').select('*').eq('id', defaultProjectId).single()
+        .then(({ data }) => {
+          if (data) setProj({
+            ...data,
+            contractValue:        data.contract_value,
+            retentionPercent:     data.retention_pct,
+            retentionCapPercent:  data.retention_cap_pct,
+            advanceRecoveryPercent: data.advance_recovery_pct,
+            vatPercent:           data.vat_pct,
+            totalRetained:        data.total_retained,
+            advanceRemaining:     data.advance_remaining,
+          });
+        });
+    });
+  }, [defaultProjectId]);
+
+  // جلب بنود BOQ من Supabase
+  const { data: boqSections } = useSupabaseTable('boq_sections', defaultProjectId, MOCK.boqSections, 'sort_order');
+  const { data: boqItems,   reload: reloadBOQ } = useSupabaseTable('boq_items',    defaultProjectId, MOCK.boqItems,    'sort_order');
+
+  // أوامر التغيير المعتمدة
+  const { data: approvedVOs } = useSupabaseTable('variation_orders', defaultProjectId, MOCK.variationOrders, 'submitted_at');
+  const voTotal = approvedVOs.filter(v => v.status === 'APPROVED').reduce((s, v) => s + (v.value || 0), 0);
+
+  const [modal,        setModal]        = useState(false);
+  const [inputMode,    setInputMode]    = useState('boq');   // 'boq' | 'manual'
+  const [calcModal,    setCalcModal]    = useState(false);
+  const [approveModal, setApproveModal] = useState(null);
+  const [loading,      setLoading]      = useState(false);
+
+  // BOQ mode — تعديل الكميات المنفذة في هذا المستخلص
+  const [boqExec, setBoqExec] = useState({});   // { itemId: qty }
+  useEffect(() => {
+    if (boqItems.length) {
+      const init = {};
+      boqItems.forEach(i => { init[i.id] = i.executed_qty || i.exQty || 0; });
+      setBoqExec(init);
+    }
+  }, [boqItems.length]);
+
+  const boqBaseWork = useMemo(() =>
+    boqItems.reduce((s, i) => s + (+(boqExec[i.id] || 0)) * (i.unit_rate || i.rate || 0), 0),
+  [boqItems, boqExec]);
 
   const EMPTY_FORM = {
     number: "", month: "", periodFrom: "", periodTo: "",
@@ -640,44 +834,194 @@ function ExtractsScreen({ addToast }) {
   const [form, setForm] = useState(EMPTY_FORM);
   const [calc, setCalc] = useState(null);
 
-  // Live calculation
+  // Live calculation — يعمل في كلا الوضعين
+  const effectiveBase  = inputMode === 'boq' ? boqBaseWork        : (+form.baseWork || 0);
+  const effectiveVAR   = inputMode === 'boq' ? voTotal            : (+form.variationsAmount || 0);
+
   useEffect(() => {
-    if (!proj || !form.baseWork) { setCalc(null); return; }
-    const prevExtracts = extracts.filter(e => e.projectId === projectId && e.status !== "DRAFT");
-    const retentionCumBefore = prevExtracts.reduce((s, e) => s + (e.retentionThisExtract || 0), 0);
+    if (!proj || !effectiveBase) { setCalc(null); return; }
+    const prevExtracts = extracts.filter(e => e.status !== 'DRAFT');
+    const retentionCumBefore = prevExtracts.reduce((s, e) => s + (e.retention_this_extract || e.retentionThisExtract || 0), 0);
     const result = calcEgyptianExtract({
-      contractValue: proj.contractValue,
-      baseWork: +form.baseWork || 0,
-      variationsAmount: +form.variationsAmount || 0,
-      retentionPercent: proj.retentionPercent,
-      retentionCapPercent: proj.retentionCapPercent,
-      advanceRecoveryPercent: proj.advanceRecoveryPercent,
-      vatPercent: proj.vatPercent,
+      contractValue:          proj.contractValue   || proj.contract_value   || 0,
+      baseWork:               effectiveBase,
+      variationsAmount:       effectiveVAR,
+      retentionPercent:       proj.retentionPercent     || proj.retention_pct     || 5,
+      retentionCapPercent:    proj.retentionCapPercent  || proj.retention_cap_pct || 10,
+      advanceRecoveryPercent: proj.advanceRecoveryPercent || proj.advance_recovery_pct || 4,
+      vatPercent:             proj.vatPercent       || proj.vat_pct       || 14,
       retentionCumulativeBefore: retentionCumBefore,
-      advanceRemainingBefore: proj.advanceRemaining || 0,
-      fines: +form.fines || 0,
-      otherDeductions: +form.otherDeductions || 0,
+      advanceRemainingBefore: proj.advanceRemaining || proj.advance_remaining || 0,
+      fines:            +form.fines || 0,
+      otherDeductions:  +form.otherDeductions || 0,
     });
     setCalc(result);
-  }, [form.baseWork, form.variationsAmount, form.fines, form.otherDeductions, projectId]);
+  }, [effectiveBase, effectiveVAR, form.fines, form.otherDeductions, defaultProjectId, extracts.length]);
 
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
 
   const save = async () => {
-    if (!form.number || !form.month || !form.baseWork) { addToast("أكمل الحقول المطلوبة", "error"); return; }
-    if (!calc) { addToast("أدخل الأعمال الأساسية أولاً", "error"); return; }
+    if (!form.number || !form.month) { addToast("رقم المستخلص والشهر مطلوبان", "error"); return; }
+    if (!calc) { addToast("لا توجد أعمال محسوبة — أدخل الكميات أولاً", "error"); return; }
     setLoading(true);
-    await new Promise(r => setTimeout(r, 600));
-    const newExtract = { id: `e${Date.now()}`, projectId, ...form, ...calc, status: "DRAFT", submittedAt: new Date().toISOString().split("T")[0] };
-    setExtracts(es => [...es, newExtract]);
-    addToast(`تم إنشاء المستخلص ${form.number} ✓`, "success");
+
+    // لو BOQ mode — نحدّث الكميات المنفذة في الجداول أولاً
+    if (inputMode === 'boq') {
+      const { supabase } = await import('@lib/supabaseClient');
+      await Promise.all(
+        boqItems.map(item =>
+          supabase.from('boq_items')
+            .update({ executed_qty: +(boqExec[item.id] || 0) })
+            .eq('id', item.id)
+        )
+      );
+    }
+
+    const payload = {
+      number:                  form.number,
+      month:                   form.month,
+      base_work:               calc.grossTotal - (calc.variationsAmount || effectiveVAR),
+      variations_amount:       effectiveVAR,
+      gross_total:             calc.grossTotal,
+      retention_this_extract:  calc.retentionThisExtract,
+      advance_recovery:        calc.advanceRecoveryActual,
+      fines:                   +form.fines || 0,
+      net_before_vat:          calc.netBeforeVAT,
+      vat_amount:              calc.vatAmount,
+      net_final:               calc.netFinal,
+      status:                  "DRAFT",
+      submitted_at:            new Date().toISOString().split("T")[0],
+      notes:                   inputMode === 'boq' ? 'محسوب من BOQ' : 'إدخال يدوي',
+    };
+
+    const res = await sbUpsert('extracts', payload, null, tenantId, defaultProjectId);
+    if (res.ok) reloadExtracts();
+    else setExtracts(es => [...es, { id: `e${Date.now()}`, project_id: defaultProjectId, ...payload }]);
+
+    addToast(`✓ تم إنشاء المستخلص ${form.number} — صافي: ${fmt(calc.netFinal)} ج.م`, "success");
     setLoading(false); setModal(false); setForm(EMPTY_FORM); setCalc(null);
+    setBoqExec({});
+  };
+
+  // ── تصدير المستخلص PDF ──────────────────────────────────────
+  const printExtract = (e) => {
+    const projName = proj?.name || proj?.code || '—';
+    const projClient = proj?.client || '—';
+    const cv = proj?.contractValue || proj?.contract_value || 0;
+    const retPct = proj?.retentionPercent || proj?.retention_pct || 5;
+    const vatPct = proj?.vatPercent || proj?.vat_pct || 14;
+    const advPct = proj?.advanceRecoveryPercent || proj?.advance_recovery_pct || 4;
+
+    const grossTotal  = e.gross_total  || e.grossTotal  || 0;
+    const baseWork    = e.base_work    || e.baseWork    || 0;
+    const varAmt      = e.variations_amount || e.variationsAmount || 0;
+    const retention   = e.retention_this_extract || e.retentionThisExtract || 0;
+    const advRec      = e.advance_recovery || e.advanceRecoveryActual || 0;
+    const fines       = e.fines || 0;
+    const netBVAT     = e.net_before_vat || e.netBeforeVAT || 0;
+    const vatAmt      = e.vat_amount || e.vatAmount || 0;
+    const netFinal    = e.net_final || e.netFinal || 0;
+    const statusAr    = { DRAFT:'مسودة', SUBMITTED:'مقدم', UNDER_REVIEW:'قيد المراجعة', APPROVED:'معتمد', PAID:'مدفوع', REJECTED:'مرفوض' }[e.status] || e.status;
+
+    const html = `<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>مستخلص ${e.number}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Arial', sans-serif; direction: rtl; background: #fff; color: #111; font-size: 12px; }
+  .page { max-width: 800px; margin: 20px auto; padding: 30px; border: 2px solid #1a1a2e; }
+  .header { text-align: center; border-bottom: 3px double #1a1a2e; padding-bottom: 16px; margin-bottom: 20px; }
+  .header h1 { font-size: 20px; color: #1a1a2e; letter-spacing: 2px; }
+  .header h2 { font-size: 14px; color: #444; margin-top: 4px; }
+  .badge { display: inline-block; padding: 3px 12px; border-radius: 20px; font-size: 11px; font-weight: bold; background: #fef3c7; color: #92400e; border: 1px solid #f59e0b; }
+  .meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
+  .meta-box { border: 1px solid #ddd; border-radius: 6px; padding: 10px 14px; }
+  .meta-box label { font-size: 9px; color: #888; display: block; margin-bottom: 3px; text-transform: uppercase; letter-spacing: 1px; }
+  .meta-box span { font-size: 13px; font-weight: bold; color: #1a1a2e; }
+  .section-title { font-size: 11px; font-weight: bold; color: #fff; background: #1a1a2e; padding: 6px 14px; margin: 16px 0 0; border-radius: 4px 4px 0 0; }
+  table { width: 100%; border-collapse: collapse; }
+  table th { background: #f8f9fa; padding: 8px 12px; text-align: right; font-size: 10px; color: #555; border: 1px solid #ddd; }
+  table td { padding: 9px 12px; border: 1px solid #e0e0e0; font-size: 12px; }
+  .row-label { color: #444; }
+  .row-value { text-align: left; font-family: monospace; font-weight: bold; }
+  .row-plus  { color: #166534; background: #f0fdf4; }
+  .row-minus { color: #991b1b; background: #fef2f2; }
+  .row-total { background: #fffbeb; font-weight: bold; font-size: 13px; }
+  .row-final { background: #1a1a2e; color: #f59e0b; font-size: 15px; font-weight: 900; }
+  .row-final td { color: #f59e0b; }
+  .signatures { display: grid; grid-template-columns: repeat(3,1fr); gap: 20px; margin-top: 40px; text-align: center; }
+  .sig-box { border-top: 1px solid #999; padding-top: 8px; font-size: 11px; color: #555; }
+  .footer { text-align: center; margin-top: 24px; font-size: 9px; color: #aaa; border-top: 1px solid #eee; padding-top: 10px; }
+  .amount { font-family: monospace; direction: ltr; display: inline-block; }
+  @media print {
+    body { margin: 0; }
+    .page { margin: 0; border: none; padding: 20px; }
+    @page { size: A4; margin: 1cm; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="header">
+    <div style="font-size:11px;color:#888;margin-bottom:6px;">جمهورية مصر العربية — نموذج مستخلص أعمال</div>
+    <h1>مستخلص مستحقات رقم ${e.number}</h1>
+    <h2>${e.month}</h2>
+    <div style="margin-top:8px;"><span class="badge">${statusAr}</span></div>
+  </div>
+
+  <div class="meta-grid">
+    <div class="meta-box"><label>اسم المشروع</label><span>${projName}</span></div>
+    <div class="meta-box"><label>الجهة المالكة / صاحب العمل</label><span>${projClient}</span></div>
+    <div class="meta-box"><label>قيمة العقد الأصلية</label><span class="amount">${cv.toLocaleString('ar-EG')} ج.م</span></div>
+    <div class="meta-box"><label>تاريخ التقديم</label><span>${e.submitted_at || e.submittedAt || '—'}</span></div>
+  </div>
+
+  <div class="section-title">📋 بيان الأعمال والمستحقات</div>
+  <table>
+    <thead><tr><th>البيان</th><th>النسبة</th><th>المبلغ (ج.م)</th></tr></thead>
+    <tbody>
+      <tr><td class="row-label">الأعمال الأساسية المنفذة</td><td>—</td><td class="row-value row-plus"><span class="amount">${baseWork.toLocaleString('ar-EG', {minimumFractionDigits:2})}</span></td></tr>
+      ${varAmt !== 0 ? `<tr><td class="row-label">أوامر التغيير المعتمدة</td><td>—</td><td class="row-value row-plus"><span class="amount">+${varAmt.toLocaleString('ar-EG', {minimumFractionDigits:2})}</span></td></tr>` : ''}
+      <tr class="row-total"><td><strong>إجمالي الأعمال</strong></td><td>—</td><td class="row-value"><span class="amount">${grossTotal.toLocaleString('ar-EG', {minimumFractionDigits:2})}</span></td></tr>
+      <tr style="background:#fff8f0"><td colspan="3" style="font-size:10px;color:#888;padding:4px 12px;">الاستقطاعات</td></tr>
+      <tr><td class="row-label">(−) الاحتجاز</td><td>${retPct}%</td><td class="row-value row-minus"><span class="amount">(${retention.toLocaleString('ar-EG', {minimumFractionDigits:2})})</span></td></tr>
+      <tr><td class="row-label">(−) استرجاع السلفة</td><td>${advPct}%</td><td class="row-value row-minus"><span class="amount">(${advRec.toLocaleString('ar-EG', {minimumFractionDigits:2})})</span></td></tr>
+      ${fines > 0 ? `<tr><td class="row-label">(−) الغرامات والمخالفات</td><td>—</td><td class="row-value row-minus"><span class="amount">(${fines.toLocaleString('ar-EG', {minimumFractionDigits:2})})</span></td></tr>` : ''}
+      <tr class="row-total"><td><strong>الصافي قبل ضريبة القيمة المضافة</strong></td><td>—</td><td class="row-value"><span class="amount">${netBVAT.toLocaleString('ar-EG', {minimumFractionDigits:2})}</span></td></tr>
+      <tr class="row-plus"><td class="row-label">(+) ضريبة القيمة المضافة</td><td>${vatPct}%</td><td class="row-value"><span class="amount">+${vatAmt.toLocaleString('ar-EG', {minimumFractionDigits:2})}</span></td></tr>
+      <tr class="row-final"><td><strong>الصافي النهائي للصرف</strong></td><td>—</td><td class="row-value" style="font-size:15px;"><span class="amount">${netFinal.toLocaleString('ar-EG', {minimumFractionDigits:2})} ج.م</span></td></tr>
+    </tbody>
+  </table>
+
+  <div class="signatures">
+    <div class="sig-box">مهندس المكتب الفني<br><br><br></div>
+    <div class="sig-box">مدير المشروع<br><br><br></div>
+    <div class="sig-box">الاستشاري / المالك<br><br><br></div>
+  </div>
+
+  <div class="footer">
+    تم إنشاء هذا المستخلص بواسطة TECHOFFICE ERP v4.0 — ${new Date().toLocaleDateString('ar-EG')}
+  </div>
+</div>
+<script>window.onload = () => window.print();</script>
+</body>
+</html>`;
+
+    const w = window.open('', '_blank', 'width=900,height=700');
+    w.document.write(html);
+    w.document.close();
   };
 
   const approve = async (extract) => {
     setLoading(true);
-    await new Promise(r => setTimeout(r, 500));
-    setExtracts(es => es.map(e => e.id === extract.id ? { ...e, status: "APPROVED" } : e));
+    const res = await sbPatch('extracts', extract.id, {
+      status: "APPROVED",
+      approved_at: new Date().toISOString().split("T")[0],
+    });
+    if (res.ok) reloadExtracts();
+    else setExtracts(es => es.map(e => e.id === extract.id ? { ...e, status: "APPROVED" } : e));
     addToast(`تم اعتماد المستخلص ${extract.number} ✓`, "success");
     setLoading(false); setApproveModal(null);
   };
@@ -691,11 +1035,8 @@ function ExtractsScreen({ addToast }) {
         sub="المعادلة المصرية الدقيقة — احتجاز + استرجاع سلفة + ضريبة القيمة المضافة"
         action={
           <div style={{ display: "flex", gap: 8 }}>
-            <Select value={projectId} onChange={e => setProjectId(e.target.value)} style={{ width: 160 }}>
-              {MOCK.projects.map(p => <option key={p.id} value={p.id}>{p.code}</option>)}
-            </Select>
             <Btn variant="outline" onClick={() => setCalcModal(true)}>🧮 حاسبة المعادلة</Btn>
-            <Btn onClick={() => { setForm(EMPTY_FORM); setCalc(null); setModal(true); }}>+ مستخلص جديد</Btn>
+            <Btn onClick={() => { setForm(EMPTY_FORM); setCalc(null); setBoqExec({}); setInputMode('boq'); setModal(true); }}>+ مستخلص جديد</Btn>
           </div>
         }
       >💰 المستخلصات</SectionHdr>
@@ -703,10 +1044,10 @@ function ExtractsScreen({ addToast }) {
       <div style={{ flex: 1, overflowY: "auto", padding: 20, display: "flex", flexDirection: "column", gap: 14 }}>
         {proj && (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
-            <Stat label="قيمة العقد" value={`${fmt(proj.contractValue / 1e6, 1)} م`} icon="📋" color={C.brand} />
-            <Stat label="الاحتجاز التراكمي" value={fmt(proj.totalRetained)} sub={`سقف: ${fmt(proj.contractValue * proj.retentionCapPercent / 100)}`} icon="🔒" color={C.warning} />
-            <Stat label="السلفة المتبقية" value={fmt(proj.advanceRemaining)} icon="💼" color={C.info} />
-            <Stat label="عدد المستخلصات" value={items.length} sub={`${items.filter(e => e.status === "APPROVED" || e.status === "PAID").length} معتمد`} icon="📑" color={C.purple} />
+            <Stat label="قيمة العقد" value={`${fmt((proj.contractValue||proj.contract_value||0)/1e6,1)} م`} icon="📋" color={C.brand} />
+            <Stat label="الاحتجاز التراكمي" value={fmt(proj.totalRetained||proj.total_retained||0)} sub={`سقف: ${fmt((proj.contractValue||proj.contract_value||0)*(proj.retentionCapPercent||proj.retention_cap_pct||10)/100)}`} icon="🔒" color={C.warning} />
+            <Stat label="السلفة المتبقية" value={fmt(proj.advanceRemaining||proj.advance_remaining||0)} icon="💼" color={C.info} />
+            <Stat label="عدد المستخلصات" value={items.length} sub={`${items.filter(e=>e.status==="APPROVED"||e.status==="PAID").length} معتمد`} icon="📑" color={C.purple} />
           </div>
         )}
 
@@ -725,19 +1066,19 @@ function ExtractsScreen({ addToast }) {
                 <tr key={e.id}>
                   <Td><span style={{ color: C.brand, fontWeight: 700 }}>{e.number}</span></Td>
                   <Td style={{ color: C.textSub }}>{e.month}</Td>
-                  <Td style={{ color: C.text, fontWeight: 600 }}>{fmt(e.grossTotal)}</Td>
-                  <Td style={{ color: C.warning }}>({fmt(e.retentionThisExtract)})</Td>
-                  <Td style={{ color: C.info }}>({fmt(e.advanceRecoveryActual)})</Td>
-                  <Td style={{ color: C.text }}>{fmt(e.netBeforeVAT)}</Td>
-                  <Td style={{ color: C.success }}>+{fmt(e.vatAmount)}</Td>
-                  <Td><span style={{ color: C.brand, fontWeight: 800, fontSize: 12 }}>{fmt(e.netFinal)}</span></Td>
+                  <Td style={{ color: C.text, fontWeight: 600 }}>{fmt(e.gross_total||e.grossTotal||0)}</Td>
+                  <Td style={{ color: C.warning }}>({fmt(e.retention_this_extract||e.retentionThisExtract||0)})</Td>
+                  <Td style={{ color: C.info }}>({fmt(e.advance_recovery||e.advanceRecoveryActual||0)})</Td>
+                  <Td style={{ color: C.text }}>{fmt(e.net_before_vat||e.netBeforeVAT||0)}</Td>
+                  <Td style={{ color: C.success }}>+{fmt(e.vat_amount||e.vatAmount||0)}</Td>
+                  <Td><span style={{ color: C.brand, fontWeight: 800, fontSize: 12 }}>{fmt(e.net_final||e.netFinal||0)}</span></Td>
                   <Td><Badge text={statusMap[e.status] || e.status} /></Td>
                   <Td>
                     <div style={{ display: "flex", gap: 4 }}>
                       {canApprove(e.status) && (
                         <Btn variant="success" size="xs" onClick={() => setApproveModal(e)}>✓ اعتماد</Btn>
                       )}
-                      <Btn variant="outline" size="xs">👁 عرض</Btn>
+                      <Btn variant="outline" size="xs" onClick={() => printExtract(e)}>🖨 طباعة PDF</Btn>
                     </div>
                   </Td>
                 </tr>
@@ -748,22 +1089,133 @@ function ExtractsScreen({ addToast }) {
       </div>
 
       {/* ── إنشاء مستخلص جديد ── */}
-      <Modal open={modal} onClose={() => setModal(false)} title="💰 إنشاء مستخلص جديد" width={780}>
+      <Modal open={modal} onClose={() => setModal(false)} title="💰 إنشاء مستخلص جديد" width={900}>
+        {/* ── Header Info + Mode Switch ── */}
+        <div style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "flex-end" }}>
+          <Fld label="رقم المستخلص" req style={{ flex: 1 }}>
+            <Input value={form.number} onChange={set("number")} placeholder="M-08" />
+          </Fld>
+          <Fld label="الشهر" req style={{ flex: 1 }}>
+            <Input value={form.month} onChange={set("month")} placeholder="أغسطس 2025" />
+          </Fld>
+          <Fld label="الفترة من" style={{ flex: 1 }}>
+            <Input type="date" value={form.periodFrom} onChange={set("periodFrom")} />
+          </Fld>
+          <Fld label="الفترة إلى" style={{ flex: 1 }}>
+            <Input type="date" value={form.periodTo} onChange={set("periodTo")} />
+          </Fld>
+        </div>
+
+        {/* ── Mode Tabs ── */}
+        <div style={{ display: "flex", gap: 0, marginBottom: 16, border: `1px solid ${C.border}`, borderRadius: 8, overflow: "hidden" }}>
+          {[{id:'boq', label:'📋 من BOQ (تلقائي)', desc:'يحسب من الكميات المنفذة'},
+            {id:'manual', label:'✏️ إدخال يدوي', desc:'أدخل المبالغ مباشرة'}].map(m => (
+            <button key={m.id} onClick={() => setInputMode(m.id)}
+              style={{ flex: 1, padding: "10px 16px", background: inputMode === m.id ? C.brand+"22" : "transparent",
+                border: "none", borderLeft: m.id === "manual" ? `1px solid ${C.border}` : "none",
+                cursor: "pointer", fontFamily: "inherit", textAlign: "center" }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: inputMode === m.id ? C.brand : C.textSub }}>{m.label}</div>
+              <div style={{ fontSize: 9, color: C.muted }}>{m.desc}</div>
+            </button>
+          ))}
+        </div>
+
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-          {/* Left: Form */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ fontSize: 10, color: C.brand, fontWeight: 700, borderBottom: `1px solid ${C.border}`, paddingBottom: 8 }}>📋 بيانات المستخلص</div>
-            <div style={{ display: "flex", gap: 12 }}>
-              <Fld label="رقم المستخلص" req half><Input value={form.number} onChange={set("number")} placeholder="M-08" /></Fld>
-              <Fld label="الشهر" req half><Input value={form.month} onChange={set("month")} placeholder="أغسطس 2025" /></Fld>
-            </div>
-            <div style={{ display: "flex", gap: 12 }}>
-              <Fld label="الفترة من" req half><Input type="date" value={form.periodFrom} onChange={set("periodFrom")} /></Fld>
-              <Fld label="الفترة إلى" req half><Input type="date" value={form.periodTo} onChange={set("periodTo")} /></Fld>
-            </div>
-            <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 10 }}>
-              <div style={{ fontSize: 10, color: C.brand, fontWeight: 700, marginBottom: 8 }}>🔢 الأعمال المنفذة</div>
+          {/* Left: Input Panel */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+
+            {/* ── BOQ MODE ── */}
+            {inputMode === 'boq' && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+                <div style={{ fontSize: 10, color: C.brand, fontWeight: 700, marginBottom: 8 }}>
+                  📋 بنود BOQ — عدّل الكمية المنفذة في هذا المستخلص
+                </div>
+                <div style={{ maxHeight: 320, overflowY: "auto", border: `1px solid ${C.border}`, borderRadius: 8 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10, direction: "rtl" }}>
+                    <thead>
+                      <tr style={{ background: C.surface }}>
+                        <th style={{ padding: "7px 10px", color: C.muted, textAlign: "right", fontWeight: 700, borderBottom: `1px solid ${C.border}`, width: 60 }}>الكود</th>
+                        <th style={{ padding: "7px 10px", color: C.muted, textAlign: "right", fontWeight: 700, borderBottom: `1px solid ${C.border}` }}>البند</th>
+                        <th style={{ padding: "7px 10px", color: C.muted, textAlign: "center", fontWeight: 700, borderBottom: `1px solid ${C.border}`, width: 45 }}>الوحدة</th>
+                        <th style={{ padding: "7px 10px", color: C.muted, textAlign: "center", fontWeight: 700, borderBottom: `1px solid ${C.border}`, width: 70 }}>الكمية الكلية</th>
+                        <th style={{ padding: "7px 10px", color: C.success, textAlign: "center", fontWeight: 700, borderBottom: `1px solid ${C.border}`, width: 80 }}>المنفذ ↑</th>
+                        <th style={{ padding: "7px 10px", color: C.muted, textAlign: "center", fontWeight: 700, borderBottom: `1px solid ${C.border}`, width: 80 }}>المبلغ</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {boqSections.map(sec => (
+                        <React.Fragment key={sec.id}>
+                          <tr style={{ background: C.border+"44" }}>
+                            <td colSpan={6} style={{ padding: "5px 10px", color: C.brand, fontWeight: 800, fontSize: 9 }}>
+                              {sec.code} — {sec.title}
+                            </td>
+                          </tr>
+                          {boqItems.filter(i => i.section_id === sec.id || i.sId === sec.id).map(item => {
+                            const execQty   = +(boqExec[item.id] ?? (item.executed_qty || item.exQty || 0));
+                            const rate      = item.unit_rate || item.rate || 0;
+                            const totalQty  = item.quantity  || item.qty  || 0;
+                            const lineAmt   = execQty * rate;
+                            const overExec  = execQty > totalQty;
+                            return (
+                              <tr key={item.id} style={{ borderBottom: `1px solid ${C.border}22` }}>
+                                <td style={{ padding: "5px 10px", color: C.muted, fontFamily: "monospace" }}>{item.code}</td>
+                                <td style={{ padding: "5px 10px", color: C.text, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                                    title={item.description || item.desc}>{item.description || item.desc}</td>
+                                <td style={{ padding: "5px 10px", color: C.muted, textAlign: "center" }}>{item.unit}</td>
+                                <td style={{ padding: "5px 10px", color: C.muted, textAlign: "center" }}>{(+totalQty).toLocaleString('ar')}</td>
+                                <td style={{ padding: "4px 6px", textAlign: "center" }}>
+                                  <input
+                                    type="number"
+                                    value={execQty}
+                                    onChange={e => setBoqExec(prev => ({ ...prev, [item.id]: +e.target.value }))}
+                                    min={0} max={totalQty * 1.1}
+                                    style={{
+                                      width: "100%", padding: "3px 6px", background: overExec ? C.danger+"22" : C.card,
+                                      border: `1px solid ${overExec ? C.danger : C.border}`,
+                                      borderRadius: 4, color: overExec ? C.danger : C.success,
+                                      fontFamily: "inherit", fontSize: 10, textAlign: "center", direction: "ltr",
+                                    }}
+                                  />
+                                </td>
+                                <td style={{ padding: "5px 10px", color: C.brand, fontWeight: 700, textAlign: "center", fontFamily: "monospace", fontSize: 9 }}>
+                                  {fmt(lineAmt)}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </React.Fragment>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {/* BOQ Totals */}
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 14px",
+                  background: C.brandDim, border: `1px solid ${C.brand}33`, borderRadius: 6, marginTop: 8 }}>
+                  <div>
+                    <div style={{ fontSize: 9, color: C.muted }}>أعمال BOQ</div>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: C.brand }}>{fmt(boqBaseWork)} ج.م</div>
+                  </div>
+                  <div style={{ textAlign: "center" }}>
+                    <div style={{ fontSize: 9, color: C.muted }}>أوامر تغيير معتمدة</div>
+                    <div style={{ fontSize: 13, fontWeight: 800, color: C.success }}>+{fmt(voTotal)} ج.م</div>
+                  </div>
+                  <div style={{ textAlign: "left" }}>
+                    <div style={{ fontSize: 9, color: C.muted }}>الإجمالي</div>
+                    <div style={{ fontSize: 14, fontWeight: 900, color: C.text }}>{fmt(boqBaseWork + voTotal)} ج.م</div>
+                  </div>
+                </div>
+                {/* الغرامات والخصومات */}
+                <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+                  <Fld label="الغرامات (ج.م)" half><Input type="number" value={form.fines} onChange={set("fines")} placeholder="0" /></Fld>
+                  <Fld label="خصومات أخرى (ج.م)" half><Input type="number" value={form.otherDeductions} onChange={set("otherDeductions")} placeholder="0" /></Fld>
+                </div>
+              </div>
+            )}
+
+            {/* ── MANUAL MODE ── */}
+            {inputMode === 'manual' && (
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ fontSize: 10, color: C.brand, fontWeight: 700, marginBottom: 4 }}>🔢 الأعمال المنفذة</div>
                 <Fld label="الأعمال الأساسية (ج.م)" req>
                   <Input type="number" value={form.baseWork} onChange={set("baseWork")} placeholder="8500000" />
                 </Fld>
@@ -777,7 +1229,7 @@ function ExtractsScreen({ addToast }) {
                   <Input type="number" value={form.otherDeductions} onChange={set("otherDeductions")} placeholder="0" />
                 </Fld>
               </div>
-            </div>
+            )}
           </div>
 
           {/* Right: Live Calculator */}
@@ -916,10 +1368,13 @@ function EgyptianCalcModal({ open, onClose, project }) {
 // ══════════════════════════════════════════════════════════════
 // BOQ — Phase 4: Full CRUD ✨
 // ══════════════════════════════════════════════════════════════
-function BOQScreen({ addToast }) {
+function BOQScreen({ addToast, tenantId, projectId: propProjectId }) {
   const [projectId, setProjectId] = useState("p1");
-  const [sections, setSections] = useState(MOCK.boqSections);
-  const [items, setItems] = useState(MOCK.boqItems);
+  const defaultProjectId = propProjectId || MOCK.projects[0]?.id;
+  const { data: sections, setData: setSections, reload: reloadSections } =
+    useSupabaseTable('boq_sections', defaultProjectId, MOCK.boqSections, 'sort_order');
+  const { data: items, setData: setItems, reload: reloadItems } =
+    useSupabaseTable('boq_items', defaultProjectId, MOCK.boqItems, 'sort_order');
   const [sectionModal, setSectionModal] = useState(false);
   const [itemModal, setItemModal] = useState(false);
   const [editItem, setEditItem] = useState(null);
@@ -1095,9 +1550,11 @@ function BOQScreen({ addToast }) {
 // ══════════════════════════════════════════════════════════════
 // LETTERS — Phase 5: Full CRUD ✨
 // ══════════════════════════════════════════════════════════════
-function LettersScreen({ addToast }) {
+function LettersScreen({ addToast, tenantId, projectId: propProjectId }) {
   const [projectId, setProjectId] = useState("p1");
-  const [letters, setLetters] = useState(MOCK.letters);
+  const defaultProjectId = propProjectId || MOCK.projects[0]?.id;
+  const { data: letters, setData: setLetters, busy: loadingLetters, reload: reloadLetters } =
+    useSupabaseTable('letters', defaultProjectId, MOCK.letters, 'date');
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const [filterStatus, setFilterStatus] = useState("الكل");
@@ -1120,18 +1577,19 @@ function LettersScreen({ addToast }) {
 
   const save = async () => {
     if (!form.number || !form.subject || !form.toFrom || !form.date) { addToast("أكمل الحقول المطلوبة", "error"); return; }
-    if (editing) {
-      setLetters(ls => ls.map(l => l.id === editing ? { ...l, ...form } : l));
-      addToast("تم تحديث الخطاب ✓", "success");
-    } else {
-      setLetters(ls => [...ls, { ...form, id: `l${Date.now()}`, projectId, status: "PENDING" }]);
-      addToast("تم إنشاء الخطاب ✓", "success");
-    }
+    const letterPayload = { ...form, status: editing ? form.status : "PENDING" };
+    sbUpsert('letters', letterPayload, editing, tenantId, defaultProjectId)
+      .then(r => { if (r.ok) reloadLetters(); else {
+        if (editing) setLetters(ls => ls.map(l => l.id === editing ? { ...l, ...form } : l));
+        else setLetters(ls => [...ls, { ...letterPayload, id: `l${Date.now()}` }]);
+      }});
+    addToast(editing ? "تم تحديث الخطاب ✓" : "تم إنشاء الخطاب ✓", "success");
     setModal(false);
   };
 
   const closeLetterAction = (id) => {
-    setLetters(ls => ls.map(l => l.id === id ? { ...l, status: "CLOSED" } : l));
+    sbPatch('letters', id, { status: "CLOSED" })
+      .then(r => r.ok ? reloadLetters() : setLetters(ls => ls.map(l => l.id === id ? { ...l, status: "CLOSED" } : l)));
     addToast("تم إغلاق الخطاب ✓", "success");
   };
 
@@ -1247,9 +1705,11 @@ function LettersScreen({ addToast }) {
 // ══════════════════════════════════════════════════════════════
 // GUARANTEES — Phase 5: Full CRUD + Expiry Alerts ✨
 // ══════════════════════════════════════════════════════════════
-function GuaranteesScreen({ addToast }) {
+function GuaranteesScreen({ addToast, tenantId, projectId: propProjectId }) {
   const [projectId, setProjectId] = useState("p1");
-  const [guarantees, setGuarantees] = useState(MOCK.guarantees);
+  const defaultProjectId = propProjectId || MOCK.projects[0]?.id;
+  const { data: guarantees, setData: setGuarantees, busy: loadingGuarantees, reload: reloadGuarantees } =
+    useSupabaseTable('guarantees', defaultProjectId, MOCK.guarantees, 'expiry_date');
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const EMPTY = { number: "", type: "PERFORMANCE_BOND", bank: "", value: "", issueDate: "", expiryDate: "", notes: "" };
@@ -1266,17 +1726,22 @@ function GuaranteesScreen({ addToast }) {
   const openEdit = (g) => { setForm({ ...g }); setEditing(g.id); setModal(true); };
   const save = () => {
     if (!form.number || !form.bank || !form.value || !form.expiryDate) { addToast("أكمل الحقول المطلوبة", "error"); return; }
-    if (editing) {
-      setGuarantees(gs => gs.map(g => g.id === editing ? { ...g, ...form, value: +form.value } : g));
-      addToast("تم تحديث الضمان ✓", "success");
-    } else {
-      const typeAr = { PERFORMANCE_BOND: "ضمان حسن تنفيذ", ADVANCE_PAYMENT: "ضمان استرداد سلفة", MAINTENANCE_BOND: "ضمان صيانة", BID_BOND: "ضمان عطاء" };
-      setGuarantees(gs => [...gs, { ...form, id: `g${Date.now()}`, projectId, value: +form.value, status: "ACTIVE", typeAr: typeAr[form.type] }]);
-      addToast("تم إنشاء الضمان ✓", "success");
-    }
+    const typeAr = { PERFORMANCE_BOND: "ضمان حسن تنفيذ", ADVANCE_PAYMENT: "ضمان استرداد سلفة", MAINTENANCE_BOND: "ضمان صيانة", BID_BOND: "ضمان عطاء" };
+    const guarPayload = { ...form, value: +form.value, type_ar: typeAr[form.type],
+      expiry_date: form.expiryDate, issue_date: form.issueDate || null,
+      status: editing ? form.status : "ACTIVE" };
+    sbUpsert('guarantees', guarPayload, editing, tenantId, defaultProjectId)
+      .then(r => r.ok ? reloadGuarantees() : (editing
+        ? setGuarantees(gs => gs.map(g => g.id === editing ? { ...g, ...form, value: +form.value } : g))
+        : setGuarantees(gs => [...gs, { ...guarPayload, id: `g${Date.now()}` }])));
+    addToast(editing ? "تم تحديث الضمان ✓" : "تم إنشاء الضمان ✓", "success");
     setModal(false);
   };
-  const release = (id) => { setGuarantees(gs => gs.map(g => g.id === id ? { ...g, status: "RELEASED" } : g)); addToast("تم تحرير الضمان ✓", "success"); };
+  const release = (id) => {
+    sbPatch('guarantees', id, { status: "RELEASED" })
+      .then(r => r.ok ? reloadGuarantees() : setGuarantees(gs => gs.map(g => g.id === id ? { ...g, status: "RELEASED" } : g)));
+    addToast("تم تحرير الضمان ✓", "success");
+  };
 
   const typeLabels = { PERFORMANCE_BOND: "ضمان حسن تنفيذ", ADVANCE_PAYMENT: "ضمان استرداد سلفة", MAINTENANCE_BOND: "ضمان صيانة", BID_BOND: "ضمان عطاء" };
   const statusLabels = { ACTIVE: "نشط", EXPIRED: "منتهي", RELEASED: "محرر", CALLED: "مستدعى" };
@@ -1404,9 +1869,11 @@ function GuaranteesScreen({ addToast }) {
 // ══════════════════════════════════════════════════════════════
 // VARIATION ORDERS — Phase 5: Full CRUD + Approval Workflow ✨
 // ══════════════════════════════════════════════════════════════
-function VariationOrdersScreen({ addToast }) {
+function VariationOrdersScreen({ addToast, tenantId, projectId: propProjectId }) {
   const [projectId, setProjectId] = useState("p1");
-  const [vos, setVOs] = useState(MOCK.variationOrders);
+  const defaultProjectId = propProjectId || MOCK.projects[0]?.id;
+  const { data: vos, setData: setVOs, busy: loadingVOs, reload: reloadVOs } =
+    useSupabaseTable('variation_orders', defaultProjectId, MOCK.variationOrders, 'submitted_at');
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const [rejectModal, setRejectModal] = useState(null);
@@ -1424,22 +1891,24 @@ function VariationOrdersScreen({ addToast }) {
   const openEdit = (v) => { setForm({ ...v }); setEditing(v.id); setModal(true); };
   const save = () => {
     if (!form.number || !form.description || !form.value) { addToast("أكمل الحقول المطلوبة", "error"); return; }
-    if (editing) {
-      setVOs(vs => vs.map(v => v.id === editing ? { ...v, ...form, value: +form.value } : v));
-      addToast("تم تحديث أمر التغيير ✓", "success");
-    } else {
-      setVOs(vs => [...vs, { ...form, id: `v${Date.now()}`, projectId, value: +form.value, status: "SUBMITTED" }]);
-      addToast("تم تقديم أمر التغيير ✓", "success");
-    }
+    const voPayload = { ...form, value: +form.value, status: editing ? form.status : "SUBMITTED",
+      submitted_at: form.submittedAt || new Date().toISOString().split("T")[0] };
+    sbUpsert('variation_orders', voPayload, editing, tenantId, defaultProjectId)
+      .then(r => r.ok ? reloadVOs() : (editing
+        ? setVOs(vs => vs.map(v => v.id === editing ? { ...v, ...form, value: +form.value } : v))
+        : setVOs(vs => [...vs, { ...voPayload, id: `v${Date.now()}` }])));
+    addToast(editing ? "تم تحديث أمر التغيير ✓" : "تم تقديم أمر التغيير ✓", "success");
     setModal(false);
   };
 
   const approve = (id) => {
-    setVOs(vs => vs.map(v => v.id === id ? { ...v, status: "APPROVED" } : v));
+    sbPatch('variation_orders', id, { status: "APPROVED", approved_at: new Date().toISOString().split("T")[0] })
+      .then(r => r.ok ? reloadVOs() : setVOs(vs => vs.map(v => v.id === id ? { ...v, status: "APPROVED" } : v)));
     addToast("تم اعتماد أمر التغيير ✓", "success");
   };
   const reject = () => {
-    setVOs(vs => vs.map(v => v.id === rejectModal ? { ...v, status: "REJECTED", rejectionReason: rejectReason } : v));
+    sbPatch('variation_orders', rejectModal, { status: "REJECTED" })
+      .then(r => r.ok ? reloadVOs() : setVOs(vs => vs.map(v => v.id === rejectModal ? { ...v, status: "REJECTED" } : v)));
     addToast("تم رفض أمر التغيير", "info");
     setRejectModal(null); setRejectReason("");
   };
@@ -1548,9 +2017,11 @@ function VariationOrdersScreen({ addToast }) {
 // ══════════════════════════════════════════════════════════════
 // QUALITY TESTS — Phase 5: SPC/Cpk Analysis ✨
 // ══════════════════════════════════════════════════════════════
-function QualityScreen({ addToast }) {
+function QualityScreen({ addToast, tenantId, projectId: propProjectId }) {
   const [projectId, setProjectId] = useState("p1");
-  const [tests, setTests] = useState(MOCK.qualityTests);
+  const defaultProjectId = propProjectId || MOCK.projects[0]?.id;
+  const { data: tests, setData: setTests, busy: loadingTests, reload: reloadTests } =
+    useSupabaseTable('quality_tests', defaultProjectId, MOCK.qualityTests, 'tested_at');
   const [modal, setModal] = useState(false);
   const [tab, setTab] = useState("table");
   const [selectedType, setSelectedType] = useState("دمك نووي");
@@ -1565,7 +2036,11 @@ function QualityScreen({ addToast }) {
   const save = () => {
     if (!form.chainage || !form.result) { addToast("أكمل الحقول المطلوبة", "error"); return; }
     const st = +form.result >= +form.required ? "PASS" : "FAIL";
-    setTests(ts => [...ts, { ...form, id: `qt${Date.now()}`, projectId, result: +form.result, required: +form.required, usl: +form.usl, lsl: +form.lsl, status: st }]);
+    const qtPayload = { ...form, result: +form.result, required: +form.required,
+      usl: +form.usl || null, lsl: +form.lsl || null, status: st,
+      tested_at: new Date().toISOString().split("T")[0] };
+    sbUpsert('quality_tests', qtPayload, null, tenantId, defaultProjectId)
+      .then(r => r.ok ? reloadTests() : setTests(ts => [...ts, { ...qtPayload, id: `qt${Date.now()}` }]));
     addToast(`تم تسجيل الاختبار — ${st === "PASS" ? "✓ ناجح" : "✗ راسب"}`, st === "PASS" ? "success" : "error");
     setModal(false);
   };
@@ -1725,10 +2200,26 @@ function QualityScreen({ addToast }) {
 // ══════════════════════════════════════════════════════════════
 // AUDIT LOG — Phase 5 ✨
 // ══════════════════════════════════════════════════════════════
-function AuditLogScreen() {
+function AuditLogScreen({ tenantId }) {
   const [filter, setFilter] = useState("الكل");
-  const actions = ["الكل", "CREATE", "UPDATE", "APPROVE", "REJECT", "DELETE", "LOGIN", "EXPORT"];
-  const filtered = filter === "الكل" ? MOCK.auditLog : MOCK.auditLog.filter(l => l.action === filter);
+  const [logs,   setLogs]   = useState(MOCK.auditLog);
+  const [busy,   setBusy]   = useState(false);
+  const actions = ["الكل","CREATE","UPDATE","APPROVE","REJECT","DELETE","SUBMIT","CLOSE"];
+
+  useEffect(() => {
+    if (!tenantId) return;
+    setBusy(true);
+    import('@lib/supabaseClient').then(({ supabase }) =>
+      supabase.from('audit_log').select('*')
+        .eq('tenant_id', tenantId)
+        .order('created_at', { ascending: false })
+        .limit(100)
+    ).then(({ data, error }) => {
+      if (!error && data?.length) setLogs(data);
+    }).finally(() => setBusy(false));
+  }, [tenantId]);
+
+  const filtered = logs.filter(l => filter === "الكل" || l.action === filter);
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -1747,9 +2238,9 @@ function AuditLogScreen() {
             <tbody>
               {filtered.map(l => (
                 <tr key={l.id}>
-                  <Td style={{ color: C.muted, fontSize: 10, whiteSpace: "nowrap" }}>{l.ts}</Td>
-                  <Td style={{ fontWeight: 600 }}>{l.user}</Td>
-                  <Td><Badge text={l.role} color={l.role === "ADMIN" ? C.brand : l.role === "MANAGER" ? C.info : C.purple} /></Td>
+                  <Td style={{ color: C.muted, fontSize: 10, whiteSpace: "nowrap" }}>{l.created_at ? new Date(l.created_at).toLocaleString('ar-EG') : l.ts}</Td>
+                  <Td style={{ fontWeight: 600 }}>{l.user_name || l.user}</Td>
+                  <Td><Badge text={l.user_role || l.role} color={(l.user_role||l.role) === "ADMIN" ? C.brand : (l.user_role||l.role) === "MANAGER" ? C.info : C.purple} /></Td>
                   <Td><Badge text={l.action} color={l.action === "CREATE" ? C.success : l.action === "DELETE" ? C.danger : l.action === "APPROVE" ? C.brand : C.info} /></Td>
                   <Td><span style={{ color: C.teal, fontSize: 10, fontFamily: "monospace" }}>{l.entity}</span></Td>
                   <Td style={{ fontSize: 10, color: C.textSub }}>{l.detail}</Td>
@@ -1776,10 +2267,16 @@ function LoginScreen({ onLogin }) {
     setErr("");
     if (!email || !pass) { setErr("أدخل البريد وكلمة المرور"); return; }
     setLoading(true);
-    // في الإنتاج: await api.auth.login(email, pass)
-    await new Promise(r => setTimeout(r, 900));
-    setLoading(false);
-    onLogin({ name: "خالد إبراهيم", role: "ADMIN", email });
+    try {
+      const { supabase } = await import('@lib/supabaseClient');
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password: pass });
+      if (error) throw error;
+      onLogin(data.user);
+    } catch (e) {
+      setErr(e.message || "بيانات الدخول غير صحيحة");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
